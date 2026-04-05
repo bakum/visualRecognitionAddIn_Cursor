@@ -254,6 +254,43 @@ std::string BuildRequestBody(std::string_view mime_type, const std::string& inli
     return std::string(boost::json::serialize(root));
 }
 
+constexpr size_t kMaxPlainTextPromptBytes = 2U * 1024U * 1024U;
+
+/// Подсказка модели: не нормализовать пробелы/переносы без явной просьбы пользователя.
+constexpr char kPlainTextSystemInstruction[] =
+    "When the user message has line breaks, indentation, lists, tables, or multiple paragraphs, treat "
+    "that structure as meaningful. In your answer, preserve the same kind of formatting (line breaks, "
+    "spacing, bullet/numbered lists, aligned blocks) whenever you reproduce, quote, transform, or "
+    "build on their text. Do not collapse whitespace or flatten layout unless the user explicitly "
+    "asks for plain or compact output.";
+
+std::string BuildPlainTextRequestBody(const std::string& user_text_utf8) {
+    boost::json::object sys_part;
+    sys_part["text"] = std::string(kPlainTextSystemInstruction);
+    boost::json::array sys_parts_arr;
+    sys_parts_arr.push_back(sys_part);
+    boost::json::object system_instruction;
+    system_instruction["parts"] = sys_parts_arr;
+
+    boost::json::object part_text;
+    part_text["text"] = user_text_utf8;
+
+    boost::json::array parts;
+    parts.push_back(part_text);
+
+    boost::json::object content;
+    content["parts"] = parts;
+
+    boost::json::array contents;
+    contents.push_back(content);
+
+    boost::json::object root;
+    root["systemInstruction"] = system_instruction;
+    root["contents"] = contents;
+
+    return std::string(boost::json::serialize(root));
+}
+
 bool HttpPostGemini(const std::string& api_key_utf8,
                     const std::string& model_id_utf8,
                     const std::string& body_utf8,
@@ -448,6 +485,58 @@ std::optional<std::string> ExtractCandidateText(const std::string& json) {
     }
 }
 
+/// Все текстовые части первого кандидата подряд (модель может разбить длинный ответ на несколько parts).
+std::optional<std::string> ExtractCandidateTextAllTextParts(const std::string& json) {
+    try {
+        const boost::json::value v = boost::json::parse(json);
+        if (!v.is_object()) {
+            return std::nullopt;
+        }
+        const boost::json::object& root = v.as_object();
+        const auto it = root.find("candidates");
+        if (it == root.end() || !it->value().is_array()) {
+            return std::nullopt;
+        }
+        const boost::json::array& cand = it->value().as_array();
+        if (cand.empty()) {
+            return std::nullopt;
+        }
+        const boost::json::value& c0 = cand[0];
+        if (!c0.is_object()) {
+            return std::nullopt;
+        }
+        const boost::json::object& cobj = c0.as_object();
+        const auto cit = cobj.find("content");
+        if (cit == cobj.end() || !cit->value().is_object()) {
+            return std::nullopt;
+        }
+        const boost::json::object& content = cit->value().as_object();
+        const auto pit = content.find("parts");
+        if (pit == content.end() || !pit->value().is_array()) {
+            return std::nullopt;
+        }
+        const boost::json::array& parts = pit->value().as_array();
+        std::string merged;
+        for (const boost::json::value& pv : parts) {
+            if (!pv.is_object()) {
+                continue;
+            }
+            const boost::json::object& po = pv.as_object();
+            const auto tit = po.find("text");
+            if (tit == po.end() || !tit->value().is_string()) {
+                continue;
+            }
+            merged.append(std::string(tit->value().as_string()));
+        }
+        if (merged.empty()) {
+            return std::nullopt;
+        }
+        return merged;
+    } catch (...) {
+        return std::nullopt;
+    }
+}
+
 std::string StripMarkdownJsonFence(std::string s) {
     TrimAsciiInPlace(s);
     if (s.size() >= 7 && s.compare(0, 7, "```json") == 0) {
@@ -542,6 +631,68 @@ std::string GeminiExtractPrimaryDocumentJsonImpl(const std::string& api_key_utf8
     return inner;
 }
 
+std::string GeminiGeneratePlainTextImpl(const std::string& api_key_utf8,
+                                          const std::string& model_id_utf8,
+                                          const std::string& user_text_utf8,
+                                          std::string& error_out) {
+    error_out.clear();
+    if (api_key_utf8.empty()) {
+        error_out = "API key is empty";
+        return {};
+    }
+    if (user_text_utf8.size() > kMaxPlainTextPromptBytes) {
+        error_out = "Prompt text too large";
+        return {};
+    }
+    std::string trimmed = user_text_utf8;
+    TrimAsciiInPlace(trimmed);
+    if (trimmed.empty()) {
+        error_out = "Empty prompt text";
+        return {};
+    }
+
+    std::string model = model_id_utf8;
+    TrimAsciiInPlace(model);
+    if (model.empty()) {
+        model = kGeminiDefaultModelId;
+    }
+    if (!IsValidGeminiModelId(model)) {
+        error_out = "Invalid Gemini model id";
+        return {};
+    }
+
+    const std::string body = BuildPlainTextRequestBody(user_text_utf8);
+
+    unsigned long http_status = 0;
+    std::string raw_response;
+    if (!HttpPostGemini(api_key_utf8, model, body, http_status, raw_response, error_out)) {
+        return {};
+    }
+
+    if (http_status != 200UL) {
+        const auto api_err = ExtractGeminiApiErrorMessage(raw_response);
+        if (api_err.has_value()) {
+            error_out = *api_err;
+        } else {
+            error_out = "Gemini API HTTP " + std::to_string(http_status);
+        }
+        return {};
+    }
+
+    const auto text_opt = ExtractCandidateTextAllTextParts(raw_response);
+    if (!text_opt.has_value()) {
+        const auto block = ExtractPromptBlockMessage(raw_response);
+        if (block.has_value()) {
+            error_out = "Gemini blocked request: " + *block;
+        } else {
+            error_out = "Gemini response has no extractable text (empty candidates)";
+        }
+        return {};
+    }
+
+    return *text_opt;
+}
+
 } // namespace
 
 std::string GeminiExtractPrimaryDocumentJson(const std::string& api_key_utf8,
@@ -576,6 +727,13 @@ std::string GeminiExtractPrimaryDocumentJsonFromImageBytes(const std::string& ap
     }
     return GeminiExtractPrimaryDocumentJsonImpl(api_key_utf8, model_id_utf8, *mime, image_bytes,
                                                 error_out);
+}
+
+std::string GeminiGeneratePlainText(const std::string& api_key_utf8,
+                                    const std::string& model_id_utf8,
+                                    const std::string& user_text_utf8,
+                                    std::string& error_out) {
+    return GeminiGeneratePlainTextImpl(api_key_utf8, model_id_utf8, user_text_utf8, error_out);
 }
 
 std::string GeminiSupportedModelsCatalogJson() {

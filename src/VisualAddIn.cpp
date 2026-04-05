@@ -137,6 +137,8 @@ constexpr int32_t kErrWrongTypeBlob = 5;
 constexpr int32_t kErrWrongTypeBase64 = 6;
 constexpr int32_t kErrMissingApiKey = 7;
 constexpr int32_t kErrAiFailure = 8;
+constexpr int32_t kErrEmptyTextPrompt = 9;
+constexpr int32_t kErrTextPromptTooLarge = 10;
 constexpr int32_t kErrUnknown = 99;
 
 void SetLastErrorPair(const std::shared_ptr<variant_t>& code_storage,
@@ -182,6 +184,13 @@ std::pair<int32_t, std::string> MapPipelineErrorToCodeAndText(const std::string&
     if (error_field_utf8 == "Unsupported inline image format") {
         return {kErrAiFailure,
                 std::string(u8"Формат изображения не поддерживается (ожидаются JPEG, PNG, GIF, WebP, BMP, TIFF).")};
+    }
+    if (error_field_utf8 == "Empty prompt text") {
+        return {kErrEmptyTextPrompt, std::string(u8"Пустой текст запроса (после обрезки пробелов).")};
+    }
+    if (error_field_utf8 == "Prompt text too large") {
+        return {kErrTextPromptTooLarge,
+                std::string(u8"Текст запроса слишком длинный (лимит 2 МиБ UTF-8).")};
     }
     return {kErrUnknown, error_field_utf8};
 }
@@ -274,6 +283,8 @@ VisualAddIn::VisualAddIn()
     AddMethod(u"ParsePrimaryDocumentImageGeminiBase64",
               u"РазобратьПервичныйДокументИзображениеИИBase64", this,
               &VisualAddIn::ParsePrimaryDocumentImageAiBase64, {});
+    AddMethod(u"GenerateGeminiText", u"СгенерироватьТекстИИ", this, &VisualAddIn::GenerateGeminiText,
+              {});
     AddMethod(u"GetSupportedGeminiModels", u"ПолучитьПоддерживаемыеМоделиGemini", this,
               &VisualAddIn::GetSupportedGeminiModels, {});
 }
@@ -345,6 +356,40 @@ variant_t VisualAddIn::ParsePrimaryDocumentImageAi(variant_t& image_blob) {
     variant_t r = ParsePrimaryDocumentGeminiFromBytes(std::get<std::vector<char>>(image_blob), false);
     SyncLastErrorFromParseResult(last_error_code_storage_, last_error_text_storage_, r);
     return r;
+}
+
+variant_t VisualAddIn::GenerateGeminiText(variant_t& prompt_utf8) {
+    ClearLastErrorPair(last_error_code_storage_, last_error_text_storage_);
+    if (!std::holds_alternative<std::string>(prompt_utf8)) {
+        SetLastErrorPair(last_error_code_storage_, last_error_text_storage_, kErrWrongTypeBase64,
+                         std::string(u8"Ожидалась строка UTF-8 (VTYPE_PWSTR)."));
+        throw std::runtime_error("Expected prompt as UTF-8 string (VTYPE_PWSTR)");
+    }
+    const std::string api_key = GetTrimmedUtf8Property(ai_studio_api_key_storage_);
+    if (api_key.empty()) {
+        SetLastErrorPair(last_error_code_storage_, last_error_text_storage_, kErrMissingApiKey,
+                         std::string(u8"Не задан ключ API (КлючAPIAIStudio / AIStudioApiKey)."));
+        variant_t err = JsonErrorObjectUtf8("API key is empty");
+        SyncLastErrorFromParseResult(last_error_code_storage_, last_error_text_storage_, err);
+        return err;
+    }
+    const std::string model_id = GetTrimmedUtf8Property(gemini_model_storage_);
+    std::string gemini_err;
+    const std::string text_out =
+        GeminiGeneratePlainText(api_key, model_id, std::get<std::string>(prompt_utf8), gemini_err);
+    if (!gemini_err.empty()) {
+        if (gemini_err == "Invalid Gemini model id" || gemini_err == "Empty prompt text"
+            || gemini_err == "Prompt text too large") {
+            const auto mapped = MapPipelineErrorToCodeAndText(gemini_err);
+            SetLastErrorPair(last_error_code_storage_, last_error_text_storage_, mapped.first,
+                             mapped.second);
+        } else {
+            SetLastErrorPair(last_error_code_storage_, last_error_text_storage_, kErrAiFailure,
+                             std::string(u8"Ошибка Gemini API: ") + gemini_err);
+        }
+        return JsonErrorObjectUtf8(gemini_err);
+    }
+    return text_out;
 }
 
 variant_t VisualAddIn::ParsePrimaryDocumentPdfAiBase64(variant_t& pdf_base64) {

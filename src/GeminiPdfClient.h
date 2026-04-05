@@ -20,6 +20,12 @@ std::string GeminiExtractPrimaryDocumentJsonFromImageBytes(const std::string& ap
                                                            const std::vector<char>& image_bytes,
                                                            std::string& error_out);
 
+/// Произвольный текстовый запрос к Gemini без схемы JSON и без разбора первички; ответ — обычная строка модели (UTF-8).
+std::string GeminiGeneratePlainText(const std::string& api_key_utf8,
+                                    const std::string& model_id_utf8,
+                                    const std::string& user_text_utf8,
+                                    std::string& error_out);
+
 /// Каталог рекомендуемых моделей (UTF-8 JSON): defaultModelId, models[{id,name,notes}], подсказки. Ключ API не нужен.
 std::string GeminiSupportedModelsCatalogJson();
 

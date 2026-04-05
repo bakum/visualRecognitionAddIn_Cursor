@@ -26,7 +26,8 @@
 #include "Component.h"
 
 /// ПоследняяОшибка (англ. LastErrorCode): 0 успех; 1 пустой PDF/изображение; 4 неверный Base64;
-/// 5 неверный тип (blob); 6 неверный тип (строка); 7 пустой ключ API; 8 ошибка Gemini; 99 прочее.
+/// 5 неверный тип (blob); 6 неверный тип (строка); 7 пустой ключ API; 8 ошибка Gemini;
+/// 9 пустой текст запроса; 10 текст запроса слишком длинный; 99 прочее.
 /// Ключ: AIStudioApiKey / КлючAPIAIStudio; модель: GeminiModel / МодельGemini (UTF-8).
 ///
 /// Локального извлечения текста из PDF нет — только Google Gemini (в т.ч. сканы).
@@ -40,6 +41,9 @@ public:
 
     variant_t ParsePrimaryDocumentImageAi(variant_t& image_blob);
     variant_t ParsePrimaryDocumentImageAiBase64(variant_t& image_base64);
+
+    /// Один аргумент — строка UTF-8 (промпт); ответ модели без принудительного JSON первички.
+    variant_t GenerateGeminiText(variant_t& prompt_utf8);
 
     /// Без параметров: JSON с полями defaultModelId и models[{id,name,notes}] для выбора МодельGemini.
     variant_t GetSupportedGeminiModels();
