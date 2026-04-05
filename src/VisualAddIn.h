@@ -41,6 +41,9 @@ public:
     variant_t ParsePrimaryDocumentImageAi(variant_t& image_blob);
     variant_t ParsePrimaryDocumentImageAiBase64(variant_t& image_base64);
 
+    /// Без параметров: JSON с полями defaultModelId и models[{id,name,notes}] для выбора МодельGemini.
+    variant_t GetSupportedGeminiModels();
+
 protected:
     std::string extensionName() override;
 

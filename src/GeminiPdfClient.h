@@ -20,4 +20,7 @@ std::string GeminiExtractPrimaryDocumentJsonFromImageBytes(const std::string& ap
                                                            const std::vector<char>& image_bytes,
                                                            std::string& error_out);
 
+/// Каталог рекомендуемых моделей (UTF-8 JSON): defaultModelId, models[{id,name,notes}], подсказки. Ключ API не нужен.
+std::string GeminiSupportedModelsCatalogJson();
+
 #endif

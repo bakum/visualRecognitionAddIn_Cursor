@@ -259,20 +259,28 @@ VisualAddIn::VisualAddIn()
     AddProperty(u"AIStudioApiKey", u"КлючAPIAIStudio", ai_studio_api_key_storage_);
     AddProperty(u"GeminiModel", u"МодельGemini", gemini_model_storage_);
 
-    // Без «ИИ» в імені — той самий Gemini-виклик (старий код 1С).
-    AddMethod(u"РазобратьПервичныйДокументPdf", u"РазобратьПервичныйДокументPdf", this,
+    // Перший аргумент AddMethod — англійська назва (lang=0), другий — російська (lang=1).
+    // Два варіанти PDF викликають той самий Gemini-шлях (старий код 1С без «ИИ» у імені).
+    AddMethod(u"ParsePrimaryDocumentPdf", u"РазобратьПервичныйДокументPdf", this,
               &VisualAddIn::ParsePrimaryDocumentPdfAi, {});
-    AddMethod(u"РазобратьПервичныйДокументPdfBase64", u"РазобратьПервичныйДокументPdfBase64", this,
+    AddMethod(u"ParsePrimaryDocumentPdfBase64", u"РазобратьПервичныйДокументPdfBase64", this,
               &VisualAddIn::ParsePrimaryDocumentPdfAiBase64, {});
-    AddMethod(u"РазобратьПервичныйДокументPdfИИ", u"РазобратьПервичныйДокументPdfИИ", this,
+    AddMethod(u"ParsePrimaryDocumentPdfGemini", u"РазобратьПервичныйДокументPdfИИ", this,
               &VisualAddIn::ParsePrimaryDocumentPdfAi, {});
-    AddMethod(u"РазобратьПервичныйДокументPdfИИBase64", u"РазобратьПервичныйДокументPdfИИBase64", this,
+    AddMethod(u"ParsePrimaryDocumentPdfGeminiBase64", u"РазобратьПервичныйДокументPdfИИBase64", this,
               &VisualAddIn::ParsePrimaryDocumentPdfAiBase64, {});
-    AddMethod(u"РазобратьПервичныйДокументИзображениеИИ", u"РазобратьПервичныйДокументИзображениеИИ", this,
+    AddMethod(u"ParsePrimaryDocumentImageGemini", u"РазобратьПервичныйДокументИзображениеИИ", this,
               &VisualAddIn::ParsePrimaryDocumentImageAi, {});
-    AddMethod(u"РазобратьПервичныйДокументИзображениеИИBase64",
+    AddMethod(u"ParsePrimaryDocumentImageGeminiBase64",
               u"РазобратьПервичныйДокументИзображениеИИBase64", this,
               &VisualAddIn::ParsePrimaryDocumentImageAiBase64, {});
+    AddMethod(u"GetSupportedGeminiModels", u"ПолучитьПоддерживаемыеМоделиGemini", this,
+              &VisualAddIn::GetSupportedGeminiModels, {});
+}
+
+variant_t VisualAddIn::GetSupportedGeminiModels() {
+    ClearLastErrorPair(last_error_code_storage_, last_error_text_storage_);
+    return GeminiSupportedModelsCatalogJson();
 }
 
 variant_t VisualAddIn::ParsePrimaryDocumentGeminiFromBytes(const std::vector<char>& bytes,

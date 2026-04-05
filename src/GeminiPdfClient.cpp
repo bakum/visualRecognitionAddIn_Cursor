@@ -577,3 +577,40 @@ std::string GeminiExtractPrimaryDocumentJsonFromImageBytes(const std::string& ap
     return GeminiExtractPrimaryDocumentJsonImpl(api_key_utf8, model_id_utf8, *mime, image_bytes,
                                                 error_out);
 }
+
+std::string GeminiSupportedModelsCatalogJson() {
+    boost::json::array models;
+    auto add = [&models](const char* id, const char* name, const char* notes_utf8) {
+        boost::json::object o;
+        o["id"] = id;
+        o["name"] = name;
+        o["notes"] = std::string(notes_utf8);
+        models.push_back(o);
+    };
+    add("gemini-3.1-pro-preview", "Gemini 3.1 Pro (preview)",
+        u8"Линейка выше 2.5; превью, доступность и квоты — в AI Studio.");
+    add("gemini-3.1-flash-lite-preview", "Gemini 3.1 Flash-Lite (preview)",
+        u8"Облегчённая 3.1; превью.");
+    add("gemini-3-flash-preview", "Gemini 3 Flash (preview)",
+        u8"Основной Flash линейки 3 в API (имени gemini-3.0-flash нет). Не путать с несуществующим gemini-3.1-flash без суффикса.");
+    add("gemini-2.5-pro", "Gemini 2.5 Pro", u8"Выше качество, ниже скорость; PDF и изображения.");
+    add("gemini-2.5-flash", "Gemini 2.5 Flash",
+        u8"Идентификатор по умолчанию в компоненте; PDF и изображения, быстрый ответ.");
+    add("gemini-2.5-flash-lite", "Gemini 2.5 Flash-Lite",
+        u8"Облегчённый вариант 2.5; быстрее/дешевле Flash.");
+
+    boost::json::object root;
+    root["defaultModelId"] = std::string(kGeminiDefaultModelId);
+    root["namingNote"] = std::string(
+        u8"Отдельных моделей gemini-3.0-flash и gemini-3.1-flash (без суффикса) в Gemini API нет. "
+        u8"Flash для линейки 3 — gemini-3-flash-preview; облегчённый вариант 3.1 — gemini-3.1-flash-lite-preview. "
+        u8"Для картинок в документации также фигурирует gemini-3.1-flash-image-preview.");
+    root["propertyHint"] =
+        std::string(u8"В свойство МодельGemini (GeminiModel) подставляйте значение поля id из массива models.");
+    root["disclaimer"] = std::string(
+        u8"Модели линейки Gemini 1.x и ниже 2.0 в список не включены (для generateContent не рекомендуются). "
+        u8"Идентификаторы с суффиксом preview могут меняться. "
+        u8"Фактический доступ — в https://aistudio.google.com/ и в документации Gemini API.");
+    root["models"] = models;
+    return boost::json::serialize(root);
+}
