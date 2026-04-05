@@ -5,7 +5,7 @@
 #include <vector>
 
 /// Идентификатор модели по умолчанию (если из 1С передана пустая строка).
-inline constexpr char kGeminiDefaultModelId[] = "gemini-2.0-flash";
+inline constexpr char kGeminiDefaultModelId[] = "gemini-2.5-flash";
 
 /// PDF (application/pdf) → Gemini; структура как у локального разбора первички.
 /// model_id_utf8 — имя модели API; пусто после trim — kGeminiDefaultModelId.

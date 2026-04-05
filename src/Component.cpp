@@ -435,11 +435,18 @@ void Component::storeParams(const std::vector<variant_t>& src, tVariant* dest) {
 std::string Component::toUTF8String(std::basic_string_view<WCHAR_T> src)
 {
 #ifdef _WINDOWS
-	int len;
-	int slength = src.size();
-	len = WideCharToMultiByte(CP_ACP, 0, src.data(), slength, 0, 0, 0, 0);
-	std::string r(len, '\0');
-	WideCharToMultiByte(CP_ACP, 0, src.data(), slength, &r[0], len, 0, 0);
+	// 1C PWSTR is UTF-16; std::string inside the add-in is UTF-8 (u8 literals, JSON, API text).
+	if (src.empty()) {
+		return {};
+	}
+	const int slength = static_cast<int>(src.size());
+	const int len =
+	    WideCharToMultiByte(CP_UTF8, 0, src.data(), slength, nullptr, 0, nullptr, nullptr);
+	if (len <= 0) {
+		return {};
+	}
+	std::string r(static_cast<size_t>(len), '\0');
+	WideCharToMultiByte(CP_UTF8, 0, src.data(), slength, r.data(), len, nullptr, nullptr);
 	return r;
 #else
 	static std::wstring_convert<std::codecvt_utf8_utf16<char16_t>, char16_t> cvt_utf8_utf16;
@@ -460,11 +467,16 @@ std::string Component::toUTF8String(std::basic_string_view<WCHAR_T> src)
 //}
 std::u16string Component::toUTF16String(std::string_view src) {
 #ifdef _WINDOWS
-	int len;
-	int slength = (int)src.size() + 1;
-	len = MultiByteToWideChar(CP_ACP, 0, src.data(), slength, 0, 0);
-	std::wstring r(len, L'\0');
-	MultiByteToWideChar(CP_ACP, 0, src.data(), slength, &r[0], len);
+	if (src.empty()) {
+		return {};
+	}
+	const int slength = static_cast<int>(src.size());
+	const int len = MultiByteToWideChar(CP_UTF8, 0, src.data(), slength, nullptr, 0);
+	if (len <= 0) {
+		return {};
+	}
+	std::wstring r(static_cast<size_t>(len), L'\0');
+	MultiByteToWideChar(CP_UTF8, 0, src.data(), slength, r.data(), len);
 	return std::u16string(reinterpret_cast<const char16_t*>(r.data()), r.size());
 #else
 	static std::wstring_convert<std::codecvt_utf8_utf16<char16_t>, char16_t> cvt_utf8_utf16;

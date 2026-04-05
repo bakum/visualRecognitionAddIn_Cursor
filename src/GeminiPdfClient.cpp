@@ -97,9 +97,23 @@ boost::json::object BuildInvoiceResponseSchema() {
         boost::json::object props;
         props["supplier"] = boost::json::object({{"type", "string"}});
         props["buyer"] = boost::json::object({{"type", "string"}});
-        props["inn"] = boost::json::object({{"type", "string"}});
-        props["kpp"] = boost::json::object({{"type", "string"}});
+        props["supplierInn"] = boost::json::object({{"type", "string"}});
+        props["buyerInn"] = boost::json::object({{"type", "string"}});
+        props["supplierKpp"] = boost::json::object({{"type", "string"}});
+        props["buyerKpp"] = boost::json::object({{"type", "string"}});
+        props["supplierOkpo"] = boost::json::object({{"type", "string"}});
+        props["buyerOkpo"] = boost::json::object({{"type", "string"}});
         counterparty["properties"] = props;
+        boost::json::array cp_req;
+        cp_req.push_back("supplier");
+        cp_req.push_back("buyer");
+        cp_req.push_back("supplierInn");
+        cp_req.push_back("buyerInn");
+        cp_req.push_back("supplierKpp");
+        cp_req.push_back("buyerKpp");
+        cp_req.push_back("supplierOkpo");
+        cp_req.push_back("buyerOkpo");
+        counterparty["required"] = cp_req;
     }
 
     boost::json::object contract;
@@ -207,7 +221,14 @@ std::string BuildRequestBody(std::string_view mime_type, const std::string& inli
         "JSON object that strictly follows the provided JSON schema. Use empty string \"\" for unknown "
         "fields. Preserve the original language and spelling from the document for text values. For "
         "lineItems, include every product/service row with name, quantity, unit, price, amount when "
-        "visible; omit fields only if absent.";
+        "visible; omit fields only if absent. In counterparty: supplierInn is the tax id of the "
+        "supplier/seller/issuer (e.g. ЄДРПОУ, ДРФО, ИНН next to Постачальник/Продавець/Виконавець); "
+        "buyerInn is the buyer's tax id when shown (Покупець/Замовник). supplierKpp and buyerKpp are "
+        "Russian КПП when present; otherwise \"\". supplierOkpo and buyerOkpo: in Russian "
+        "documents use label ОКПО (8 digits for organizations, 10 for sole proprietors); in Ukrainian "
+        "documents the same role is ЄДРПОУ (typically 8 digits for legal entities) — put that value "
+        "in supplierOkpo/buyerOkpo when it is the party's registration/statistical code, even if also "
+        "in supplierInn. If absent, \"\". Do not put the buyer's code into supplierOkpo.";
 
     boost::json::object part_text;
     part_text["text"] = prompt;

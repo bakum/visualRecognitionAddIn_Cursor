@@ -25,28 +25,19 @@
 
 #include "Component.h"
 
-/// ПоследняяОшибка (англ. LastErrorCode) — целое: 0 успех; 1 пустой PDF; 2 нет текста/скан;
-/// 3 PDF отключён при сборке; 4 неверный Base64; 5 неверный тип аргумента (blob); 6 неверный тип (строка);
-/// 7 пустой ключ API; 8 ошибка Gemini (сеть/API); 99 прочая ошибка (текст в ТекстПоследнейОшибки / LastErrorText).
-/// Ключ API AI Studio: AIStudioApiKey / КлючAPIAIStudio; модель Gemini: GeminiModel / МодельGemini (UTF-8, чтение и запись).
+/// ПоследняяОшибка (англ. LastErrorCode): 0 успех; 1 пустой PDF/изображение; 4 неверный Base64;
+/// 5 неверный тип (blob); 6 неверный тип (строка); 7 пустой ключ API; 8 ошибка Gemini; 99 прочее.
+/// Ключ: AIStudioApiKey / КлючAPIAIStudio; модель: GeminiModel / МодельGemini (UTF-8).
+///
+/// Локального извлечения текста из PDF нет — только Google Gemini (в т.ч. сканы).
+/// Методы РазобратьПервичныйДокументPdf* без «ИИ» в имени — те же вызовы, что и *ИИ (совместимость со старым кодом 1С).
 class VisualAddIn : public Component {
 public:
     VisualAddIn();
 
-    variant_t ParsePrimaryDocumentPdf(variant_t& pdf_blob);
-
-    /// Те саме, що РазобратьПервичныйДокументPdf, але PDF передається як Base64 (рядок UTF-8).
-    variant_t ParsePrimaryDocumentPdfBase64(variant_t& pdf_base64);
-
-    /// Плоский текст PDF (UTF-8), без разбора первички. Коды ошибок — те же, что у РазобратьПервичныйДокументPdf.
-    variant_t ExtractPdfPlainText(variant_t& pdf_blob);
-    variant_t ExtractPdfPlainTextBase64(variant_t& pdf_base64);
-
-    /// Структурирование через Google Gemini (PDF со сканом и/или текстовым слоем); ключ — КлючAPIAIStudio / AIStudioApiKey. JSON как у РазобратьПервичныйДокументPdf.
     variant_t ParsePrimaryDocumentPdfAi(variant_t& pdf_blob);
     variant_t ParsePrimaryDocumentPdfAiBase64(variant_t& pdf_base64);
 
-    /// То же через Gemini, но вход — одно растровое изображение (JPEG/PNG/GIF/WebP/BMP/TIFF); PDF не допускается.
     variant_t ParsePrimaryDocumentImageAi(variant_t& image_blob);
     variant_t ParsePrimaryDocumentImageAiBase64(variant_t& image_base64);
 
@@ -55,11 +46,8 @@ protected:
 
 private:
     std::shared_ptr<variant_t> last_error_code_storage_;
-    /// UTF-8: пусто при коде 0; иначе текст для пользователя.
     std::shared_ptr<variant_t> last_error_text_storage_;
-    /// UTF-8: ключ API Google AI Studio (aistudio.google.com); задаётся из 1С перед вызовами, требующими ключа.
     std::shared_ptr<variant_t> ai_studio_api_key_storage_;
-    /// UTF-8: id модели Gemini (например gemini-2.0-flash). Пустая строка — внутри подставляется значение по умолчанию.
     std::shared_ptr<variant_t> gemini_model_storage_;
 
     variant_t ParsePrimaryDocumentGeminiFromBytes(const std::vector<char>& bytes, bool inline_as_pdf);

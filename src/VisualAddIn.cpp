@@ -36,25 +36,8 @@
 #include <boost/json.hpp>
 
 #include "GeminiPdfClient.h"
-#include "InvoiceTextParser.h"
-#include "PdfTextExtractor.h"
 
 namespace {
-
-std::string WideToUtf8(const std::wstring& w) {
-    if (w.empty()) {
-        return {};
-    }
-    const int n = WideCharToMultiByte(CP_UTF8, 0, w.c_str(), static_cast<int>(w.size()), nullptr, 0,
-                                      nullptr, nullptr);
-    if (n <= 0) {
-        return {};
-    }
-    std::string out(static_cast<size_t>(n), '\0');
-    WideCharToMultiByte(CP_UTF8, 0, w.c_str(), static_cast<int>(w.size()), out.data(), n, nullptr,
-                        nullptr);
-    return out;
-}
 
 int Base64DecodeUnit(unsigned char c) {
     if (c >= 'A' && c <= 'Z') {
@@ -75,7 +58,6 @@ int Base64DecodeUnit(unsigned char c) {
     return -1;
 }
 
-/// RFC 4648 Base64; пробіли / CR / LF ігноруються, «=» лише в кінці (після нього нічого не читаємо).
 std::optional<std::vector<char>> DecodeBase64(std::string_view in) {
     std::vector<unsigned char> clean;
     clean.reserve(in.size());
@@ -131,7 +113,6 @@ std::optional<std::vector<char>> DecodeBase64(std::string_view in) {
     return out;
 }
 
-/// Если корень JSON — объект с строковым полем error, возвращает его (сообщение об ошибке разбора).
 std::optional<std::string> ExtractErrorFromResultJson(const std::string& json_utf8) {
     try {
         const boost::json::value v = boost::json::parse(json_utf8);
@@ -149,11 +130,8 @@ std::optional<std::string> ExtractErrorFromResultJson(const std::string& json_ut
     }
 }
 
-// Коды ПоследняяОшибка (договорной контракт для 1С):
 constexpr int32_t kErrOk = 0;
 constexpr int32_t kErrEmptyPdf = 1;
-constexpr int32_t kErrPdfNoText = 2;
-constexpr int32_t kErrPdfDisabled = 3;
 constexpr int32_t kErrInvalidBase64 = 4;
 constexpr int32_t kErrWrongTypeBlob = 5;
 constexpr int32_t kErrWrongTypeBase64 = 6;
@@ -178,20 +156,9 @@ void ClearLastErrorPair(const std::shared_ptr<variant_t>& code_storage,
     SetLastErrorPair(code_storage, text_storage, kErrOk, std::string());
 }
 
-/// Сообщения error из PdfBytesToParseResult / JSON — на английском; наружу отдаём код + локализованное описание.
 std::pair<int32_t, std::string> MapPipelineErrorToCodeAndText(const std::string& error_field_utf8) {
     if (error_field_utf8 == "Empty PDF data") {
         return {kErrEmptyPdf, std::string(u8"Пустые данные PDF.")};
-    }
-    if (error_field_utf8
-        == "Could not extract text (encrypted, scanned, or invalid PDF)") {
-        return {kErrPdfNoText,
-                std::string(u8"Не удалось извлечь текст: шифрование, скан или повреждённый PDF.")};
-    }
-    if (error_field_utf8
-        == "PDF support disabled (enable VISUAL_ADDIN_WITH_PDF on Windows)") {
-        return {kErrPdfDisabled,
-                std::string(u8"Поддержка PDF отключена при сборке компоненты.")};
     }
     if (error_field_utf8 == "Invalid Base64 string") {
         return {kErrInvalidBase64, std::string(u8"Некорректная строка Base64.")};
@@ -210,7 +177,7 @@ std::pair<int32_t, std::string> MapPipelineErrorToCodeAndText(const std::string&
     }
     if (error_field_utf8 == "PDF bytes passed to image method") {
         return {kErrAiFailure,
-                std::string(u8"Передан PDF; для PDF используйте РазобратьПервичныйДокументPdfИИ.")};
+                std::string(u8"Передан PDF; для PDF используйте РазобратьПервичныйДокументPdf (или …PdfИИ).")};
     }
     if (error_field_utf8 == "Unsupported inline image format") {
         return {kErrAiFailure,
@@ -235,23 +202,6 @@ void SyncLastErrorFromParseResult(const std::shared_ptr<variant_t>& code_storage
     }
     const auto mapped = MapPipelineErrorToCodeAndText(*err);
     SetLastErrorPair(code_storage, text_storage, mapped.first, std::string(mapped.second));
-}
-
-variant_t PdfBytesToParseResult(const std::vector<char>& pdf) {
-    if (pdf.empty()) {
-        return std::string("{\"error\":\"Empty PDF data\"}");
-    }
-#if defined(VISUAL_ADDIN_HAVE_MUPDF) || defined(VISUAL_ADDIN_HAVE_PDFIUM)
-    const std::wstring text = ExtractPdfTextW(pdf);
-    if (text.empty() && !pdf.empty()) {
-        return std::string(
-            "{\"error\":\"Could not extract text (encrypted, scanned, or invalid PDF)\"}");
-    }
-    return ParseInvoiceTextToJson(text);
-#else
-    (void)pdf;
-    return std::string("{\"error\":\"PDF support disabled (enable VISUAL_ADDIN_WITH_PDF on Windows)\"}");
-#endif
 }
 
 std::string GetTrimmedUtf8Property(const std::shared_ptr<variant_t>& storage) {
@@ -281,7 +231,6 @@ VisualAddIn::VisualAddIn()
       last_error_text_storage_(std::make_shared<variant_t>(std::string())),
       ai_studio_api_key_storage_(std::make_shared<variant_t>(std::string())),
       gemini_model_storage_(std::make_shared<variant_t>(std::string(kGeminiDefaultModelId))) {
-    // Версія збігається з project(VERSION ...) у CMakeLists.txt.
     AddProperty(
         u"Version",
         u"Версия",
@@ -310,15 +259,11 @@ VisualAddIn::VisualAddIn()
     AddProperty(u"AIStudioApiKey", u"КлючAPIAIStudio", ai_studio_api_key_storage_);
     AddProperty(u"GeminiModel", u"МодельGemini", gemini_model_storage_);
 
-    // 1С: оба псевдонима метода — на русском (alias и alias_ru в GetMethodName).
+    // Без «ИИ» в імені — той самий Gemini-виклик (старий код 1С).
     AddMethod(u"РазобратьПервичныйДокументPdf", u"РазобратьПервичныйДокументPdf", this,
-              &VisualAddIn::ParsePrimaryDocumentPdf, {});
+              &VisualAddIn::ParsePrimaryDocumentPdfAi, {});
     AddMethod(u"РазобратьПервичныйДокументPdfBase64", u"РазобратьПервичныйДокументPdfBase64", this,
-              &VisualAddIn::ParsePrimaryDocumentPdfBase64, {});
-    AddMethod(u"ИзвлечьТекстИзPdf", u"ИзвлечьТекстИзPdf", this, &VisualAddIn::ExtractPdfPlainText,
-              {});
-    AddMethod(u"ИзвлечьТекстИзPdfBase64", u"ИзвлечьТекстИзPdfBase64", this,
-              &VisualAddIn::ExtractPdfPlainTextBase64, {});
+              &VisualAddIn::ParsePrimaryDocumentPdfAiBase64, {});
     AddMethod(u"РазобратьПервичныйДокументPdfИИ", u"РазобратьПервичныйДокументPdfИИ", this,
               &VisualAddIn::ParsePrimaryDocumentPdfAi, {});
     AddMethod(u"РазобратьПервичныйДокументPdfИИBase64", u"РазобратьПервичныйДокументPdfИИBase64", this,
@@ -328,83 +273,6 @@ VisualAddIn::VisualAddIn()
     AddMethod(u"РазобратьПервичныйДокументИзображениеИИBase64",
               u"РазобратьПервичныйДокументИзображениеИИBase64", this,
               &VisualAddIn::ParsePrimaryDocumentImageAiBase64, {});
-}
-
-variant_t VisualAddIn::ParsePrimaryDocumentPdf(variant_t& pdf_blob) {
-    ClearLastErrorPair(last_error_code_storage_, last_error_text_storage_);
-    if (!std::holds_alternative<std::vector<char>>(pdf_blob)) {
-        SetLastErrorPair(last_error_code_storage_, last_error_text_storage_, kErrWrongTypeBlob,
-                         std::string(u8"Ожидались двоичные данные PDF (VTYPE_BLOB)."));
-        throw std::runtime_error("Expected PDF as binary data (VTYPE_BLOB)");
-    }
-    variant_t r = PdfBytesToParseResult(std::get<std::vector<char>>(pdf_blob));
-    SyncLastErrorFromParseResult(last_error_code_storage_, last_error_text_storage_, r);
-    return r;
-}
-
-variant_t VisualAddIn::ExtractPdfPlainText(variant_t& pdf_blob) {
-    ClearLastErrorPair(last_error_code_storage_, last_error_text_storage_);
-    if (!std::holds_alternative<std::vector<char>>(pdf_blob)) {
-        SetLastErrorPair(last_error_code_storage_, last_error_text_storage_, kErrWrongTypeBlob,
-                         std::string(u8"Ожидались двоичные данные PDF (VTYPE_BLOB)."));
-        throw std::runtime_error("Expected PDF as binary data (VTYPE_BLOB)");
-    }
-    const std::vector<char>& pdf = std::get<std::vector<char>>(pdf_blob);
-    if (pdf.empty()) {
-        SetLastErrorPair(last_error_code_storage_, last_error_text_storage_, kErrEmptyPdf,
-                         std::string(u8"Пустые данные PDF."));
-        return std::string();
-    }
-#if defined(VISUAL_ADDIN_HAVE_MUPDF) || defined(VISUAL_ADDIN_HAVE_PDFIUM)
-    const std::wstring w = ExtractPdfTextW(pdf);
-    if (w.empty()) {
-        SetLastErrorPair(last_error_code_storage_, last_error_text_storage_, kErrPdfNoText,
-                         std::string(u8"Не удалось извлечь текст: шифрование, скан или повреждённый PDF."));
-        return std::string();
-    }
-    return WideToUtf8(w);
-#else
-    SetLastErrorPair(last_error_code_storage_, last_error_text_storage_, kErrPdfDisabled,
-                     std::string(u8"Поддержка PDF отключена при сборке компоненты."));
-    return std::string();
-#endif
-}
-
-variant_t VisualAddIn::ExtractPdfPlainTextBase64(variant_t& pdf_base64) {
-    ClearLastErrorPair(last_error_code_storage_, last_error_text_storage_);
-    if (!std::holds_alternative<std::string>(pdf_base64)) {
-        SetLastErrorPair(last_error_code_storage_, last_error_text_storage_, kErrWrongTypeBase64,
-                         std::string(u8"Ожидалась строка Base64 (VTYPE_PWSTR / UTF-8)."));
-        throw std::runtime_error("Expected PDF as Base64 string (VTYPE_PWSTR / UTF-8 string)");
-    }
-    const std::string& b64 = std::get<std::string>(pdf_base64);
-    const std::optional<std::vector<char>> pdf = DecodeBase64(b64);
-    if (!pdf.has_value()) {
-        SetLastErrorPair(last_error_code_storage_, last_error_text_storage_, kErrInvalidBase64,
-                         std::string(u8"Некорректная строка Base64."));
-        return std::string();
-    }
-    variant_t blob = *pdf;
-    return ExtractPdfPlainText(blob);
-}
-
-variant_t VisualAddIn::ParsePrimaryDocumentPdfBase64(variant_t& pdf_base64) {
-    ClearLastErrorPair(last_error_code_storage_, last_error_text_storage_);
-    if (!std::holds_alternative<std::string>(pdf_base64)) {
-        SetLastErrorPair(last_error_code_storage_, last_error_text_storage_, kErrWrongTypeBase64,
-                         std::string(u8"Ожидалась строка Base64 (VTYPE_PWSTR / UTF-8)."));
-        throw std::runtime_error("Expected PDF as Base64 string (VTYPE_PWSTR / UTF-8 string)");
-    }
-    const std::string& b64 = std::get<std::string>(pdf_base64);
-    const std::optional<std::vector<char>> pdf = DecodeBase64(b64);
-    if (!pdf.has_value()) {
-        SetLastErrorPair(last_error_code_storage_, last_error_text_storage_, kErrInvalidBase64,
-                         std::string(u8"Некорректная строка Base64."));
-        return std::string("{\"error\":\"Invalid Base64 string\"}");
-    }
-    variant_t r = PdfBytesToParseResult(*pdf);
-    SyncLastErrorFromParseResult(last_error_code_storage_, last_error_text_storage_, r);
-    return r;
 }
 
 variant_t VisualAddIn::ParsePrimaryDocumentGeminiFromBytes(const std::vector<char>& bytes,
@@ -454,7 +322,9 @@ variant_t VisualAddIn::ParsePrimaryDocumentPdfAi(variant_t& pdf_blob) {
                          std::string(u8"Ожидались двоичные данные PDF (VTYPE_BLOB)."));
         throw std::runtime_error("Expected PDF as binary data (VTYPE_BLOB)");
     }
-    return ParsePrimaryDocumentGeminiFromBytes(std::get<std::vector<char>>(pdf_blob), true);
+    variant_t r = ParsePrimaryDocumentGeminiFromBytes(std::get<std::vector<char>>(pdf_blob), true);
+    SyncLastErrorFromParseResult(last_error_code_storage_, last_error_text_storage_, r);
+    return r;
 }
 
 variant_t VisualAddIn::ParsePrimaryDocumentImageAi(variant_t& image_blob) {
@@ -464,7 +334,9 @@ variant_t VisualAddIn::ParsePrimaryDocumentImageAi(variant_t& image_blob) {
                          std::string(u8"Ожидались двоичные данные изображения (VTYPE_BLOB)."));
         throw std::runtime_error("Expected image as binary data (VTYPE_BLOB)");
     }
-    return ParsePrimaryDocumentGeminiFromBytes(std::get<std::vector<char>>(image_blob), false);
+    variant_t r = ParsePrimaryDocumentGeminiFromBytes(std::get<std::vector<char>>(image_blob), false);
+    SyncLastErrorFromParseResult(last_error_code_storage_, last_error_text_storage_, r);
+    return r;
 }
 
 variant_t VisualAddIn::ParsePrimaryDocumentPdfAiBase64(variant_t& pdf_base64) {
@@ -479,7 +351,9 @@ variant_t VisualAddIn::ParsePrimaryDocumentPdfAiBase64(variant_t& pdf_base64) {
     if (!pdf.has_value()) {
         SetLastErrorPair(last_error_code_storage_, last_error_text_storage_, kErrInvalidBase64,
                          std::string(u8"Некорректная строка Base64."));
-        return JsonErrorObjectUtf8("Invalid Base64 string");
+        variant_t err = JsonErrorObjectUtf8("Invalid Base64 string");
+        SyncLastErrorFromParseResult(last_error_code_storage_, last_error_text_storage_, err);
+        return err;
     }
     variant_t blob = *pdf;
     return ParsePrimaryDocumentPdfAi(blob);
@@ -497,7 +371,9 @@ variant_t VisualAddIn::ParsePrimaryDocumentImageAiBase64(variant_t& image_base64
     if (!img.has_value()) {
         SetLastErrorPair(last_error_code_storage_, last_error_text_storage_, kErrInvalidBase64,
                          std::string(u8"Некорректная строка Base64."));
-        return JsonErrorObjectUtf8("Invalid Base64 string");
+        variant_t err = JsonErrorObjectUtf8("Invalid Base64 string");
+        SyncLastErrorFromParseResult(last_error_code_storage_, last_error_text_storage_, err);
+        return err;
     }
     variant_t blob = *img;
     return ParsePrimaryDocumentImageAi(blob);
