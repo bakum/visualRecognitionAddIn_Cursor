@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <limits>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -564,6 +565,52 @@ std::optional<std::string> ExtractCandidateTextAllTextParts(const std::string& j
     }
 }
 
+void ExtractUsageStats(const std::string& json, GeminiUsageStats* usage_out) {
+    if (!usage_out) {
+        return;
+    }
+    *usage_out = GeminiUsageStats{};
+    try {
+        const boost::json::value v = boost::json::parse(json);
+        if (!v.is_object()) {
+            return;
+        }
+        const boost::json::object& root = v.as_object();
+        const auto uit = root.find("usageMetadata");
+        if (uit == root.end() || !uit->value().is_object()) {
+            return;
+        }
+        const boost::json::object& usage = uit->value().as_object();
+        const auto read_i64 = [&usage](const char* key) -> std::optional<int64_t> {
+            const auto it = usage.find(key);
+            if (it == usage.end()) {
+                return std::nullopt;
+            }
+            if (it->value().is_int64()) {
+                return it->value().as_int64();
+            }
+            if (it->value().is_uint64()) {
+                const uint64_t v = it->value().as_uint64();
+                if (v <= static_cast<uint64_t>(std::numeric_limits<int64_t>::max())) {
+                    return static_cast<int64_t>(v);
+                }
+            }
+            return std::nullopt;
+        };
+
+        const std::optional<int64_t> prompt = read_i64("promptTokenCount");
+        const std::optional<int64_t> output = read_i64("candidatesTokenCount");
+        const std::optional<int64_t> total = read_i64("totalTokenCount");
+        if (prompt.has_value() || output.has_value() || total.has_value()) {
+            usage_out->prompt_tokens = prompt.value_or(0);
+            usage_out->output_tokens = output.value_or(0);
+            usage_out->total_tokens = total.value_or(0);
+            usage_out->has_usage = true;
+        }
+    } catch (...) {
+    }
+}
+
 std::string StripMarkdownJsonFence(std::string s) {
     TrimAsciiInPlace(s);
     if (s.size() >= 7 && s.compare(0, 7, "```json") == 0) {
@@ -648,7 +695,8 @@ std::string GeminiExtractPrimaryDocumentJsonImpl(const std::string& api_key_utf8
                                                  const std::string& model_id_utf8,
                                                  std::string_view mime_type,
                                                  const std::vector<char>& bytes,
-                                                 std::string& error_out) {
+                                                 std::string& error_out,
+                                                 GeminiUsageStats* usage_out) {
     error_out.clear();
     if (api_key_utf8.empty()) {
         error_out = "API key is empty";
@@ -693,6 +741,8 @@ std::string GeminiExtractPrimaryDocumentJsonImpl(const std::string& api_key_utf8
         return {};
     }
 
+    ExtractUsageStats(raw_response, usage_out);
+
     const auto text_opt = ExtractCandidateText(raw_response);
     if (!text_opt.has_value()) {
         const auto block = ExtractPromptBlockMessage(raw_response);
@@ -726,7 +776,8 @@ std::string GeminiExtractPrimaryDocumentJsonImpl(const std::string& api_key_utf8
 std::string GeminiGeneratePlainTextImpl(const std::string& api_key_utf8,
                                           const std::string& model_id_utf8,
                                           const std::string& user_text_utf8,
-                                          std::string& error_out) {
+                                          std::string& error_out,
+                                          GeminiUsageStats* usage_out) {
     error_out.clear();
     if (api_key_utf8.empty()) {
         error_out = "API key is empty";
@@ -771,6 +822,8 @@ std::string GeminiGeneratePlainTextImpl(const std::string& api_key_utf8,
         return {};
     }
 
+    ExtractUsageStats(raw_response, usage_out);
+
     const auto text_opt = ExtractCandidateTextAllTextParts(raw_response);
     if (!text_opt.has_value()) {
         const auto block = ExtractPromptBlockMessage(raw_response);
@@ -790,15 +843,17 @@ std::string GeminiGeneratePlainTextImpl(const std::string& api_key_utf8,
 std::string GeminiExtractPrimaryDocumentJson(const std::string& api_key_utf8,
                                              const std::string& model_id_utf8,
                                              const std::vector<char>& pdf_bytes,
-                                             std::string& error_out) {
+                                             std::string& error_out,
+                                             GeminiUsageStats* usage_out) {
     return GeminiExtractPrimaryDocumentJsonImpl(api_key_utf8, model_id_utf8, "application/pdf",
-                                                pdf_bytes, error_out);
+                                                pdf_bytes, error_out, usage_out);
 }
 
 std::string GeminiExtractPrimaryDocumentJsonFromImageBytes(const std::string& api_key_utf8,
                                                            const std::string& model_id_utf8,
                                                            const std::vector<char>& image_bytes,
-                                                           std::string& error_out) {
+                                                           std::string& error_out,
+                                                           GeminiUsageStats* usage_out) {
     error_out.clear();
     if (api_key_utf8.empty()) {
         error_out = "API key is empty";
@@ -818,14 +873,16 @@ std::string GeminiExtractPrimaryDocumentJsonFromImageBytes(const std::string& ap
         return {};
     }
     return GeminiExtractPrimaryDocumentJsonImpl(api_key_utf8, model_id_utf8, *mime, image_bytes,
-                                                error_out);
+                                                error_out, usage_out);
 }
 
 std::string GeminiGeneratePlainText(const std::string& api_key_utf8,
                                     const std::string& model_id_utf8,
                                     const std::string& user_text_utf8,
-                                    std::string& error_out) {
-    return GeminiGeneratePlainTextImpl(api_key_utf8, model_id_utf8, user_text_utf8, error_out);
+                                    std::string& error_out,
+                                    GeminiUsageStats* usage_out) {
+    return GeminiGeneratePlainTextImpl(api_key_utf8, model_id_utf8, user_text_utf8, error_out,
+                                       usage_out);
 }
 
 std::string GeminiSupportedModelsCatalogJson() {

@@ -233,13 +233,28 @@ variant_t JsonErrorObjectUtf8(const std::string& error_utf8) {
     return std::string(boost::json::serialize(o));
 }
 
+std::string UsageJsonFromStats(const GeminiUsageStats& usage) {
+    if (!usage.has_usage) {
+        return "{}";
+    }
+    boost::json::object o;
+    o["promptTokenCount"] = usage.prompt_tokens;
+    o["candidatesTokenCount"] = usage.output_tokens;
+    o["totalTokenCount"] = usage.total_tokens;
+    return std::string(boost::json::serialize(o));
+}
+
 } // namespace
 
 VisualAddIn::VisualAddIn()
     : last_error_code_storage_(std::make_shared<variant_t>(int32_t{0})),
       last_error_text_storage_(std::make_shared<variant_t>(std::string())),
       ai_studio_api_key_storage_(std::make_shared<variant_t>(std::string())),
-      gemini_model_storage_(std::make_shared<variant_t>(std::string(kGeminiDefaultModelId))) {
+      gemini_model_storage_(std::make_shared<variant_t>(std::string(kGeminiDefaultModelId))),
+      last_prompt_tokens_storage_(std::make_shared<variant_t>(0.0)),
+      last_output_tokens_storage_(std::make_shared<variant_t>(0.0)),
+      last_total_tokens_storage_(std::make_shared<variant_t>(0.0)),
+      last_usage_json_storage_(std::make_shared<variant_t>(std::string("{}"))) {
     AddProperty(
         u"Version",
         u"Версия",
@@ -267,6 +282,10 @@ VisualAddIn::VisualAddIn()
 
     AddProperty(u"AIStudioApiKey", u"КлючAPIAIStudio", ai_studio_api_key_storage_);
     AddProperty(u"GeminiModel", u"МодельGemini", gemini_model_storage_);
+    AddProperty(u"LastPromptTokens", u"ПоследниеВходящиеТокены", last_prompt_tokens_storage_);
+    AddProperty(u"LastOutputTokens", u"ПоследниеИсходящиеТокены", last_output_tokens_storage_);
+    AddProperty(u"LastTotalTokens", u"ПоследниеВсегоТокенов", last_total_tokens_storage_);
+    AddProperty(u"LastGeminiUsageJson", u"ПоследняяСтатистикаТокеновJSON", last_usage_json_storage_);
 
     // Перший аргумент AddMethod — англійська назва (lang=0), другий — російська (lang=1).
     // Два варіанти PDF викликають той самий Gemini-шлях (старий код 1С без «ИИ» у імені).
@@ -291,11 +310,51 @@ VisualAddIn::VisualAddIn()
 
 variant_t VisualAddIn::GetSupportedGeminiModels() {
     ClearLastErrorPair(last_error_code_storage_, last_error_text_storage_);
+    ResetUsageStats();
     return GeminiSupportedModelsCatalogJson();
+}
+
+void VisualAddIn::ResetUsageStats() {
+    if (last_prompt_tokens_storage_) {
+        *last_prompt_tokens_storage_ = 0.0;
+    }
+    if (last_output_tokens_storage_) {
+        *last_output_tokens_storage_ = 0.0;
+    }
+    if (last_total_tokens_storage_) {
+        *last_total_tokens_storage_ = 0.0;
+    }
+    if (last_usage_json_storage_) {
+        *last_usage_json_storage_ = std::string("{}");
+    }
+}
+
+void VisualAddIn::SetUsageStats(const int64_t prompt_tokens,
+                                const int64_t output_tokens,
+                                const int64_t total_tokens,
+                                const bool has_usage) {
+    if (last_prompt_tokens_storage_) {
+        *last_prompt_tokens_storage_ = has_usage ? static_cast<double>(prompt_tokens) : 0.0;
+    }
+    if (last_output_tokens_storage_) {
+        *last_output_tokens_storage_ = has_usage ? static_cast<double>(output_tokens) : 0.0;
+    }
+    if (last_total_tokens_storage_) {
+        *last_total_tokens_storage_ = has_usage ? static_cast<double>(total_tokens) : 0.0;
+    }
+    if (last_usage_json_storage_) {
+        GeminiUsageStats usage;
+        usage.prompt_tokens = prompt_tokens;
+        usage.output_tokens = output_tokens;
+        usage.total_tokens = total_tokens;
+        usage.has_usage = has_usage;
+        *last_usage_json_storage_ = UsageJsonFromStats(usage);
+    }
 }
 
 variant_t VisualAddIn::ParsePrimaryDocumentGeminiFromBytes(const std::vector<char>& bytes,
                                                            const bool inline_as_pdf) {
+    ResetUsageStats();
     if (bytes.empty()) {
         SetLastErrorPair(last_error_code_storage_, last_error_text_storage_, kErrEmptyPdf,
                          inline_as_pdf ? std::string(u8"Пустые данные PDF.")
@@ -310,10 +369,13 @@ variant_t VisualAddIn::ParsePrimaryDocumentGeminiFromBytes(const std::vector<cha
     }
     const std::string model_id = GetTrimmedUtf8Property(gemini_model_storage_);
     std::string gemini_err;
+    GeminiUsageStats usage;
     const std::string json =
         inline_as_pdf
-            ? GeminiExtractPrimaryDocumentJson(api_key, model_id, bytes, gemini_err)
-            : GeminiExtractPrimaryDocumentJsonFromImageBytes(api_key, model_id, bytes, gemini_err);
+            ? GeminiExtractPrimaryDocumentJson(api_key, model_id, bytes, gemini_err, &usage)
+            : GeminiExtractPrimaryDocumentJsonFromImageBytes(api_key, model_id, bytes, gemini_err,
+                                                             &usage);
+    SetUsageStats(usage.prompt_tokens, usage.output_tokens, usage.total_tokens, usage.has_usage);
     if (!gemini_err.empty()) {
         if (gemini_err == "Invalid Gemini model id") {
             const auto mapped = MapPipelineErrorToCodeAndText(gemini_err);
@@ -360,6 +422,7 @@ variant_t VisualAddIn::ParsePrimaryDocumentImageAi(variant_t& image_blob) {
 
 variant_t VisualAddIn::GenerateGeminiText(variant_t& prompt_utf8) {
     ClearLastErrorPair(last_error_code_storage_, last_error_text_storage_);
+    ResetUsageStats();
     if (!std::holds_alternative<std::string>(prompt_utf8)) {
         SetLastErrorPair(last_error_code_storage_, last_error_text_storage_, kErrWrongTypeBase64,
                          std::string(u8"Ожидалась строка UTF-8 (VTYPE_PWSTR)."));
@@ -375,8 +438,11 @@ variant_t VisualAddIn::GenerateGeminiText(variant_t& prompt_utf8) {
     }
     const std::string model_id = GetTrimmedUtf8Property(gemini_model_storage_);
     std::string gemini_err;
+    GeminiUsageStats usage;
     const std::string text_out =
-        GeminiGeneratePlainText(api_key, model_id, std::get<std::string>(prompt_utf8), gemini_err);
+        GeminiGeneratePlainText(api_key, model_id, std::get<std::string>(prompt_utf8), gemini_err,
+                                &usage);
+    SetUsageStats(usage.prompt_tokens, usage.output_tokens, usage.total_tokens, usage.has_usage);
     if (!gemini_err.empty()) {
         if (gemini_err == "Invalid Gemini model id" || gemini_err == "Empty prompt text"
             || gemini_err == "Prompt text too large") {

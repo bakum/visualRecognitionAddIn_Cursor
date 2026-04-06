@@ -20,6 +20,7 @@
 #ifndef VISUAL_ADDIN_H
 #define VISUAL_ADDIN_H
 
+#include <cstdint>
 #include <memory>
 #include <string>
 
@@ -56,8 +57,14 @@ private:
     std::shared_ptr<variant_t> last_error_text_storage_;
     std::shared_ptr<variant_t> ai_studio_api_key_storage_;
     std::shared_ptr<variant_t> gemini_model_storage_;
+    std::shared_ptr<variant_t> last_prompt_tokens_storage_;
+    std::shared_ptr<variant_t> last_output_tokens_storage_;
+    std::shared_ptr<variant_t> last_total_tokens_storage_;
+    std::shared_ptr<variant_t> last_usage_json_storage_;
 
     variant_t ParsePrimaryDocumentGeminiFromBytes(const std::vector<char>& bytes, bool inline_as_pdf);
+    void ResetUsageStats();
+    void SetUsageStats(int64_t prompt_tokens, int64_t output_tokens, int64_t total_tokens, bool has_usage);
 };
 
 #endif // VISUAL_ADDIN_H
