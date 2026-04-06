@@ -752,12 +752,12 @@ std::string GeminiSupportedModelsCatalogJson() {
     add("gemini-3.1-pro-preview", "Gemini 3.1 Pro (preview)",
         u8"Линейка выше 2.5; превью, доступность и квоты — в AI Studio.");
     add("gemini-3.1-flash-lite-preview", "Gemini 3.1 Flash-Lite (preview)",
-        u8"Облегчённая 3.1; превью.");
+        u8"Облегчённая 3.1; превью. Идентификатор по умолчанию в компоненте.");
     add("gemini-3-flash-preview", "Gemini 3 Flash (preview)",
         u8"Основной Flash линейки 3 в API (имени gemini-3.0-flash нет). Не путать с несуществующим gemini-3.1-flash без суффикса.");
     add("gemini-2.5-pro", "Gemini 2.5 Pro", u8"Выше качество, ниже скорость; PDF и изображения.");
     add("gemini-2.5-flash", "Gemini 2.5 Flash",
-        u8"Идентификатор по умолчанию в компоненте; PDF и изображения, быстрый ответ.");
+        u8"PDF и изображения, быстрый ответ.");
     add("gemini-2.5-flash-lite", "Gemini 2.5 Flash-Lite",
         u8"Облегчённый вариант 2.5; быстрее/дешевле Flash.");
 
