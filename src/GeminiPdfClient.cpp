@@ -84,6 +84,7 @@ boost::json::object BuildInvoiceResponseSchema() {
     {
         boost::json::object props;
         props["name"] = boost::json::object({{"type", "string"}});
+        props["sku"] = boost::json::object({{"type", "string"}});
         props["quantity"] = boost::json::object({{"type", "string"}});
         props["unit"] = boost::json::object({{"type", "string"}});
         props["price"] = boost::json::object({{"type", "string"}});
@@ -220,8 +221,11 @@ std::string BuildRequestBody(std::string_view mime_type, const std::string& inli
         "English, or other languages shown. Extract all data relevant to the schema and return a single "
         "JSON object that strictly follows the provided JSON schema. Use empty string \"\" for unknown "
         "fields. Preserve the original language and spelling from the document for text values. For "
-        "lineItems, include every product/service row with name, quantity, unit, price, amount when "
-        "visible; omit fields only if absent. In counterparty: supplierInn is the tax id of the "
+        "lineItems, include every product/service row with name, sku, quantity, unit, price, amount when "
+        "visible. Field sku is the article / vendor code / SKU when the document shows it (labels like "
+        "Артикул, Артикул постачальника, Код товару, SKU, Article, Part number, Cat. no., etc.); use \"\" "
+        "if no separate article column or value exists. Omit other fields only if absent. In counterparty: "
+        "supplierInn is the tax id of the "
         "supplier/seller/issuer (e.g. ЄДРПОУ, ДРФО, ИНН next to Постачальник/Продавець/Виконавець); "
         "buyerInn is the buyer's tax id when shown (Покупець/Замовник). supplierKpp and buyerKpp are "
         "Russian КПП when present; otherwise \"\". supplierOkpo and buyerOkpo: in Russian "
