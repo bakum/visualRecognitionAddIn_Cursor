@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.20)
 
 project(VisualRecognitionAddIn
-    VERSION 2.0.3
+    VERSION 2.0.4
     LANGUAGES CXX
     DESCRIPTION "1C native add-in (VisualRecognition)"
 )
