@@ -141,10 +141,22 @@ boost::json::object BuildInvoiceResponseSchema() {
     line_items["type"] = "array";
     line_items["items"] = line_item;
 
+    boost::json::array doc_type_enum;
+    doc_type_enum.push_back("Счет");
+    doc_type_enum.push_back("ПриходнаяНакладная");
+    doc_type_enum.push_back("РасходнаяНакладная");
+    doc_type_enum.push_back("АктВыполненныхРабот");
+    doc_type_enum.push_back("Неопределено");
+    boost::json::object document_type_field;
+    document_type_field["type"] = "string";
+    document_type_field["enum"] = doc_type_enum;
+
     boost::json::object root_props;
     root_props["counterparty"] = counterparty;
     root_props["contract"] = contract;
     root_props["invoiceNumber"] = boost::json::object({{"type", "string"}});
+    root_props["documentTitle"] = boost::json::object({{"type", "string"}});
+    root_props["documentType"] = document_type_field;
     root_props["bankDetails"] = bank;
     root_props["lineItems"] = line_items;
     root_props["rawText"] = boost::json::object({{"type", "string"}});
@@ -156,6 +168,8 @@ boost::json::object BuildInvoiceResponseSchema() {
     req.push_back("counterparty");
     req.push_back("contract");
     req.push_back("invoiceNumber");
+    req.push_back("documentTitle");
+    req.push_back("documentType");
     req.push_back("bankDetails");
     req.push_back("lineItems");
     schema["required"] = req;
@@ -232,7 +246,16 @@ std::string BuildRequestBody(std::string_view mime_type, const std::string& inli
         "documents use label ОКПО (8 digits for organizations, 10 for sole proprietors); in Ukrainian "
         "documents the same role is ЄДРПОУ (typically 8 digits for legal entities) — put that value "
         "in supplierOkpo/buyerOkpo when it is the party's registration/statistical code, even if also "
-        "in supplierInn. If absent, \"\". Do not put the buyer's code into supplierOkpo.";
+        "in supplierInn. If absent, \"\". Do not put the buyer's code into supplierOkpo. "
+        "Field documentTitle: the visible printed document title or form name at the top (e.g. "
+        "\"Счет на оплату\", \"Приходная накладная\", \"Акт выполненных работ\"); use \"\" if absent. "
+        "Field documentType: infer from documentTitle (and header wording) — exactly one enum: "
+        "Счет — invoice, bill, payment invoice, счет-фактура, proforma, рахунок (on payment), etc.; "
+        "ПриходнаяНакладная — incoming / goods receipt, приходная накладная, прибуткова накладна; "
+        "РасходнаяНакладная — outgoing, расходная накладная, видаткова накладна; "
+        "АктВыполненныхРабот — act of works/services, акт выполненных работ, акт наданих послуг, "
+        "акт прийому-передачі, acceptance certificates for works/services; "
+        "Неопределено — when the title does not clearly match any of the above.";
 
     boost::json::object part_text;
     part_text["text"] = prompt;
@@ -557,6 +580,70 @@ std::string StripMarkdownJsonFence(std::string s) {
     return s;
 }
 
+std::string JsonObjectGetString(const boost::json::object& o, const char* key) {
+    const auto it = o.find(key);
+    if (it == o.end() || !it->value().is_string()) {
+        return {};
+    }
+    return std::string(it->value().as_string());
+}
+
+bool WideContains(const std::wstring& w, const wchar_t* sub) {
+    return w.find(sub) != std::wstring::npos;
+}
+
+/// Подбор типа по тексту названия (дополнение к ответу модели).
+std::string InferDocumentTypeFromTitle(std::string_view title_utf8) {
+    if (title_utf8.empty()) {
+        return {};
+    }
+    std::wstring w = Utf8ToWide(std::string(title_utf8));
+    if (w.empty()) {
+        return {};
+    }
+    ::CharLowerBuffW(w.data(), static_cast<DWORD>(w.size()));
+
+    const bool incoming_ru = WideContains(w, L"приход") && WideContains(w, L"наклад");
+    const bool incoming_ua = WideContains(w, L"прибут") && WideContains(w, L"наклад");
+    const bool outgoing_ru = WideContains(w, L"расход") && WideContains(w, L"наклад");
+    const bool outgoing_ua = WideContains(w, L"видат") && WideContains(w, L"наклад");
+
+    if (incoming_ru || incoming_ua) {
+        return "ПриходнаяНакладная";
+    }
+    if (outgoing_ru || outgoing_ua) {
+        return "РасходнаяНакладная";
+    }
+
+    if (WideContains(w, L"акт")) {
+        if (WideContains(w, L"выполнен") || WideContains(w, L"виконан") || WideContains(w, L"робіт")
+            || WideContains(w, L"послуг") || WideContains(w, L"прийом") || WideContains(w, L"передач")
+            || WideContains(w, L"наданих") || WideContains(w, L"здачі") || WideContains(w, L"приймання")) {
+            return "АктВыполненныхРабот";
+        }
+    }
+
+    if (WideContains(w, L"счет") || WideContains(w, L"счёт") || WideContains(w, L"invoice")
+        || WideContains(w, L"рахунк") || WideContains(w, L"proforma") || WideContains(w, L"фактура")) {
+        return "Счет";
+    }
+
+    return {};
+}
+
+void MaybeEnrichDocumentType(boost::json::object& root) {
+    const std::string dtype = JsonObjectGetString(root, "documentType");
+    const std::string title = JsonObjectGetString(root, "documentTitle");
+    const bool need_infer = dtype.empty() || dtype == "Неопределено";
+    if (!need_infer) {
+        return;
+    }
+    const std::string inferred = InferDocumentTypeFromTitle(title);
+    if (!inferred.empty()) {
+        root["documentType"] = inferred;
+    }
+}
+
 std::string GeminiExtractPrimaryDocumentJsonImpl(const std::string& api_key_utf8,
                                                  const std::string& model_id_utf8,
                                                  std::string_view mime_type,
@@ -625,14 +712,15 @@ std::string GeminiExtractPrimaryDocumentJsonImpl(const std::string& api_key_utf8
     }
 
     try {
-        const boost::json::value parsed = boost::json::parse(inner);
-        (void)parsed;
+        boost::json::value parsed = boost::json::parse(inner);
+        if (parsed.is_object()) {
+            MaybeEnrichDocumentType(parsed.as_object());
+        }
+        return boost::json::serialize(parsed);
     } catch (const std::exception& e) {
         error_out = std::string("Gemini JSON parse error: ") + e.what();
         return {};
     }
-
-    return inner;
 }
 
 std::string GeminiGeneratePlainTextImpl(const std::string& api_key_utf8,
