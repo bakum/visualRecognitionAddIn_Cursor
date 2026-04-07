@@ -257,7 +257,9 @@ std::string BuildRequestBody(std::string_view mime_type, const std::string& inli
         "You are given an attached file: either a PDF or a single raster image (e.g. JPEG, PNG). "
         "For PDF: pages may be pure scans, have a selectable text layer, or both — read everything "
         "that is visibly rendered on each page. For one image: read all visible text and layout from "
-        "the picture. The content may be a primary accounting document (invoice, bill, act, waybill, "
+        "the picture. Before extracting fields, detect page/image orientation and read text in corrected "
+        "orientation (including 90 degrees, 180 degrees, and 270 degrees rotations) when needed. The "
+        "content may be a primary accounting document (invoice, bill, act, waybill, "
         "receipt, etc.) or another business graphic document; visible text may be Ukrainian, Russian, "
         "English, or other languages shown. Extract all data relevant to the schema and return a single "
         "JSON object that strictly follows the provided JSON schema. Use empty string \"\" for unknown "
@@ -316,7 +318,9 @@ constexpr char kPlainTextSystemInstruction[] =
     "that structure as meaningful. In your answer, preserve the same kind of formatting (line breaks, "
     "spacing, bullet/numbered lists, aligned blocks) whenever you reproduce, quote, transform, or "
     "build on their text. Do not collapse whitespace or flatten layout unless the user explicitly "
-    "asks for plain or compact output.";
+    "asks for plain or compact output. If the task involves reading text from an image or document "
+    "snapshot, first infer orientation and read in corrected orientation (including 90 degrees, "
+    "180 degrees, and 270 degrees rotations) when needed.";
 
 std::string BuildPlainTextRequestBody(const std::string& user_text_utf8) {
     boost::json::object sys_part;
