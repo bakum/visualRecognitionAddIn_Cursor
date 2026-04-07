@@ -22,11 +22,13 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <codecvt>
 #include <cwctype>
 #include <limits>
 #include <locale>
 #include <optional>
+#include <sstream>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -112,9 +114,12 @@ boost::json::object BuildInvoiceResponseSchema() {
         boost::json::object props;
         props["name"] = boost::json::object({{"type", "string"}});
         props["sku"] = boost::json::object({{"type", "string"}});
+        props["barcode"] = boost::json::object({{"type", "string"}});
         props["quantity"] = boost::json::object({{"type", "string"}});
         props["unit"] = boost::json::object({{"type", "string"}});
         props["price"] = boost::json::object({{"type", "string"}});
+        props["priceVatType"] = boost::json::object({{"type", "string"}});
+        props["vatRate"] = boost::json::object({{"type", "string"}});
         props["amount"] = boost::json::object({{"type", "string"}});
         line_item["properties"] = props;
     }
@@ -185,6 +190,7 @@ boost::json::object BuildInvoiceResponseSchema() {
     root_props["documentTitle"] = boost::json::object({{"type", "string"}});
     root_props["documentType"] = document_type_field;
     root_props["bankDetails"] = bank;
+    root_props["priceColumnVatType"] = boost::json::object({{"type", "string"}});
     root_props["lineItems"] = line_items;
     root_props["rawText"] = boost::json::object({{"type", "string"}});
 
@@ -263,12 +269,25 @@ std::string BuildRequestBody(std::string_view mime_type, const std::string& inli
         "receipt, etc.) or another business graphic document; visible text may be Ukrainian, Russian, "
         "English, or other languages shown. Extract all data relevant to the schema and return a single "
         "JSON object that strictly follows the provided JSON schema. Use empty string \"\" for unknown "
-        "fields. Preserve the original language and spelling from the document for text values. For "
-        "lineItems, include every product/service row with name, sku, quantity, unit, price, amount when "
-        "visible. Field sku is the article / vendor code / SKU when the document shows it (labels like "
-        "Артикул, Артикул постачальника, Код товару, SKU, Article, Part number, Cat. no., etc.); use \"\" "
-        "if no separate article column or value exists. Omit other fields only if absent. In counterparty: "
-        "supplierInn is the tax id of the "
+        "fields. Preserve the original language and spelling from the document for text values. Field "
+        "rawText must contain the full visible text from the whole document/image, not only the title: "
+        "include table headers, row text, totals and VAT labels if visible (examples: \"Ціна без ПДВ\", "
+        "\"Ціна з ПДВ\", \"Сума ПДВ\", \"Всього без ПДВ\", \"Всього з ПДВ\", \"без НДС\", \"с НДС\"). "
+        "Field priceColumnVatType: set \"без НДС\" if table header says price without VAT (e.g. "
+        "\"Ціна без ПДВ\", \"Цена без НДС\"); set \"с НДС\" if price with VAT (e.g. \"Ціна з ПДВ\", "
+        "\"Цена с НДС\"); else \"\". For "
+        "lineItems, include every product/service row with name, sku, barcode, quantity, unit, price, "
+        "priceVatType, vatRate, amount when visible. Field sku is the article / vendor code / SKU when the "
+        "document shows it (labels like Артикул, Артикул постачальника, Код товару, SKU, Article, "
+        "Part number, Cat. no., etc.); use \"\" if no separate article column or value exists. Field "
+        "barcode is a product barcode value from labels like Штрихкод, Barcode, EAN, GTIN, UPC "
+        "(digits only, keep leading zeros), otherwise \"\". Field priceVatType is \"с НДС\" when the "
+        "line price explicitly includes VAT, \"без НДС\" when the line price explicitly excludes VAT; "
+        "if VAT status is not explicitly stated for that line but priceColumnVatType is known, copy "
+        "priceColumnVatType into each line. Field vatRate is the explicit VAT "
+        "rate for that line (examples: \"20%\", \"7%\", \"0%\", \"без НДС\"); if no clear per-line rate is "
+        "shown, use \"\". Omit other fields only if absent. "
+        "In counterparty: supplierInn is the tax id of the "
         "supplier/seller/issuer (e.g. ЄДРПОУ, ДРФО, ИНН next to Постачальник/Продавець/Виконавець); "
         "buyerInn is the buyer's tax id when shown (Покупець/Замовник). supplierKpp and buyerKpp are "
         "Russian КПП when present; otherwise \"\". supplierOkpo and buyerOkpo: in Russian "
@@ -725,6 +744,156 @@ bool WideContains(const std::wstring& w, const wchar_t* sub) {
     return w.find(sub) != std::wstring::npos;
 }
 
+std::wstring CanonicalizeForMatch(std::wstring w) {
+    std::transform(w.begin(), w.end(), w.begin(),
+                   [](wchar_t ch) { return std::towlower(ch); });
+    std::wstring out;
+    out.reserve(w.size());
+    for (wchar_t ch : w) {
+        if (std::iswalnum(ch) != 0) {
+            out.push_back(ch);
+        }
+    }
+    return out;
+}
+
+std::wstring CanonicalizeUtf8ForMatch(std::string_view text_utf8) {
+    return CanonicalizeForMatch(Utf8ToWide(std::string(text_utf8)));
+}
+
+bool ContainsZeroVatTotalHint(std::string_view text_utf8) {
+    std::wstring w = Utf8ToWide(std::string(text_utf8));
+    if (w.empty()) {
+        return false;
+    }
+    std::transform(w.begin(), w.end(), w.begin(),
+                   [](wchar_t ch) { return std::towlower(ch); });
+    const std::wstring wc = CanonicalizeForMatch(w);
+
+    const bool has_vat_total_label =
+        WideContains(w, L"сума пдв") || WideContains(w, L"сумма ндс")
+        || WideContains(w, L"итого ндс") || WideContains(w, L"пдв")
+        || wc.find(L"сумапдв") != std::wstring::npos || wc.find(L"суммандс") != std::wstring::npos
+        || wc.find(L"итогондс") != std::wstring::npos;
+    if (!has_vat_total_label) {
+        return false;
+    }
+
+    const bool has_zero_amount =
+        WideContains(w, L"0,00") || WideContains(w, L"0.00") || WideContains(w, L" 0 ")
+        || WideContains(w, L":0") || WideContains(w, L"=0");
+    return has_zero_amount;
+}
+
+std::optional<double> ParseLocalizedNumberToken(const std::wstring& token) {
+    std::string ascii;
+    ascii.reserve(token.size());
+    bool has_digit = false;
+    for (wchar_t ch : token) {
+        if (ch >= L'0' && ch <= L'9') {
+            ascii.push_back(static_cast<char>(ch));
+            has_digit = true;
+            continue;
+        }
+        if (ch == L',' || ch == L'.') {
+            ascii.push_back('.');
+            continue;
+        }
+        if (ch == L' ' || ch == 0x00A0) {
+            continue;
+        }
+        if (has_digit) {
+            break;
+        }
+    }
+    if (!has_digit || ascii.empty()) {
+        return std::nullopt;
+    }
+    try {
+        size_t used = 0;
+        const double v = std::stod(ascii, &used);
+        if (used == 0 || v < 0.0) {
+            return std::nullopt;
+        }
+        return v;
+    } catch (...) {
+        return std::nullopt;
+    }
+}
+
+std::optional<double> ExtractNumberAfterAnyLabel(const std::wstring& lowered_text,
+                                                 const std::vector<std::wstring>& labels) {
+    for (const std::wstring& label : labels) {
+        const size_t pos = lowered_text.find(label);
+        if (pos == std::wstring::npos) {
+            continue;
+        }
+        const size_t start = pos + label.size();
+        const size_t max_len = std::min<size_t>(80, lowered_text.size() - start);
+        const std::wstring window = lowered_text.substr(start, max_len);
+        const auto parsed = ParseLocalizedNumberToken(window);
+        if (parsed.has_value()) {
+            return parsed;
+        }
+    }
+    return std::nullopt;
+}
+
+std::string NormalizePercentRate(double rate) {
+    static const int kCommonRates[] = {0, 7, 10, 14, 20};
+    for (int r : kCommonRates) {
+        if (std::abs(rate - static_cast<double>(r)) <= 0.35) {
+            return std::to_string(r) + "%";
+        }
+    }
+    std::ostringstream oss;
+    oss.setf(std::ios::fixed);
+    oss.precision(2);
+    oss << rate;
+    std::string out = oss.str();
+    while (!out.empty() && out.back() == '0') {
+        out.pop_back();
+    }
+    if (!out.empty() && out.back() == '.') {
+        out.pop_back();
+    }
+    return out + "%";
+}
+
+std::string InferVatRateFromDocumentTotals(std::string_view text_utf8) {
+    std::wstring w = Utf8ToWide(std::string(text_utf8));
+    if (w.empty()) {
+        return {};
+    }
+    std::transform(w.begin(), w.end(), w.begin(),
+                   [](wchar_t ch) { return std::towlower(ch); });
+
+    const auto vat_sum = ExtractNumberAfterAnyLabel(
+        w, {L"сума пдв", L"сумма ндс", L"итого ндс", L"ндс:", L"пдв:"});
+    const auto base_sum = ExtractNumberAfterAnyLabel(
+        w, {L"всього без пдв", L"разом без пдв", L"всего без ндс", L"итого без ндс"});
+    const auto total_sum = ExtractNumberAfterAnyLabel(
+        w, {L"всього з пдв", L"разом з пдв", L"всего с ндс", L"итого с ндс"});
+
+    if (vat_sum.has_value() && vat_sum.value() == 0.0) {
+        return "0%";
+    }
+    if (vat_sum.has_value() && base_sum.has_value() && base_sum.value() > 0.0) {
+        const double rate = (vat_sum.value() / base_sum.value()) * 100.0;
+        if (rate >= 0.0 && rate <= 100.0) {
+            return NormalizePercentRate(rate);
+        }
+    }
+    if (total_sum.has_value() && base_sum.has_value() && base_sum.value() > 0.0
+        && total_sum.value() >= base_sum.value()) {
+        const double rate = ((total_sum.value() - base_sum.value()) / base_sum.value()) * 100.0;
+        if (rate >= 0.0 && rate <= 100.0) {
+            return NormalizePercentRate(rate);
+        }
+    }
+    return {};
+}
+
 /// Подбор типа по тексту названия (дополнение к ответу модели).
 std::string InferDocumentTypeFromTitle(std::string_view title_utf8) {
     if (title_utf8.empty()) {
@@ -775,6 +944,222 @@ void MaybeEnrichDocumentType(boost::json::object& root) {
     const std::string inferred = InferDocumentTypeFromTitle(title);
     if (!inferred.empty()) {
         root["documentType"] = inferred;
+    }
+}
+
+std::string NormalizeVatRateText(std::string_view value_utf8) {
+    std::string s(value_utf8);
+    TrimAsciiInPlace(s);
+    if (s.empty()) {
+        return {};
+    }
+
+    std::wstring w = Utf8ToWide(s);
+    if (!w.empty()) {
+        std::transform(w.begin(), w.end(), w.begin(),
+                       [](wchar_t ch) { return std::towlower(ch); });
+        if (WideContains(w, L"без ндс") || WideContains(w, L"без пдв") || WideContains(w, L"no vat")
+            || WideContains(w, L"vat exempt")) {
+            return "без НДС";
+        }
+    }
+
+    std::string number;
+    bool seen_digit = false;
+    for (char ch : s) {
+        const unsigned char uc = static_cast<unsigned char>(ch);
+        if (std::isdigit(uc) != 0) {
+            number.push_back(ch);
+            seen_digit = true;
+            continue;
+        }
+        if (seen_digit && (ch == '.' || ch == ',')) {
+            number.push_back('.');
+            continue;
+        }
+        if (seen_digit) {
+            break;
+        }
+    }
+    while (!number.empty() && number.back() == '.') {
+        number.pop_back();
+    }
+    if (number.empty()) {
+        return {};
+    }
+    return number + "%";
+}
+
+std::string NormalizePriceVatTypeText(std::string_view value_utf8, std::string_view normalized_rate_utf8) {
+    std::string s(value_utf8);
+    TrimAsciiInPlace(s);
+    if (!s.empty()) {
+        std::wstring w = Utf8ToWide(s);
+        const std::wstring wc = CanonicalizeForMatch(w);
+        if (!w.empty()) {
+            std::transform(w.begin(), w.end(), w.begin(),
+                           [](wchar_t ch) { return std::towlower(ch); });
+            if (WideContains(w, L"без ндс") || WideContains(w, L"без пдв") || WideContains(w, L"no vat")
+                || WideContains(w, L"without vat") || wc.find(L"безндс") != std::wstring::npos
+                || wc.find(L"безпдв") != std::wstring::npos || wc.find(L"novat") != std::wstring::npos
+                || wc.find(L"withoutvat") != std::wstring::npos) {
+                return "без НДС";
+            }
+            if (WideContains(w, L"с ндс") || WideContains(w, L"в т.ч. ндс") || WideContains(w, L"з пдв")
+                || WideContains(w, L"with vat") || WideContains(w, L"incl")
+                || wc.find(L"сндс") != std::wstring::npos || wc.find(L"втчндс") != std::wstring::npos
+                || wc.find(L"зпдв") != std::wstring::npos || wc.find(L"withvat") != std::wstring::npos
+                || wc.find(L"incl") != std::wstring::npos) {
+                return "с НДС";
+            }
+        }
+    }
+
+    std::string rate(normalized_rate_utf8);
+    TrimAsciiInPlace(rate);
+    if (rate == "без НДС") {
+        return "без НДС";
+    }
+    if (!rate.empty()) {
+        return "с НДС";
+    }
+    return {};
+}
+
+std::string InferGlobalPriceVatTypeFromRoot(const boost::json::object& root) {
+    const std::string from_column = NormalizePriceVatTypeText(
+        JsonObjectGetString(root, "priceColumnVatType"), std::string_view{});
+    if (!from_column.empty()) {
+        return from_column;
+    }
+
+    std::string hints = JsonObjectGetString(root, "rawText");
+    const std::string title = JsonObjectGetString(root, "documentTitle");
+    if (!title.empty()) {
+        if (!hints.empty()) {
+            hints.push_back(' ');
+        }
+        hints += title;
+    }
+    TrimAsciiInPlace(hints);
+    if (hints.empty()) {
+        return {};
+    }
+
+    std::wstring w = Utf8ToWide(hints);
+    if (w.empty()) {
+        return {};
+    }
+    std::transform(w.begin(), w.end(), w.begin(),
+                   [](wchar_t ch) { return std::towlower(ch); });
+    const std::wstring wc = CanonicalizeForMatch(w);
+
+    const bool without_vat =
+        WideContains(w, L"ціна без пдв") || WideContains(w, L"цiна без пдв")
+        || WideContains(w, L"цена без ндс") || WideContains(w, L"без пдв")
+        || WideContains(w, L"без ндс") || WideContains(w, L"без пдв.")
+        || WideContains(w, L"без ндс.") || wc.find(L"цінабезпдв") != std::wstring::npos
+        || wc.find(L"цiнабезпдв") != std::wstring::npos || wc.find(L"ценабезндс") != std::wstring::npos
+        || wc.find(L"безпдв") != std::wstring::npos || wc.find(L"безндс") != std::wstring::npos;
+    if (without_vat) {
+        return "без НДС";
+    }
+
+    const bool with_vat =
+        WideContains(w, L"ціна з пдв") || WideContains(w, L"цiна з пдв")
+        || WideContains(w, L"цена с ндс") || WideContains(w, L"с ндс")
+        || WideContains(w, L"з пдв") || WideContains(w, L"в т.ч. ндс")
+        || WideContains(w, L"у т.ч. пдв") || wc.find(L"ціназпдв") != std::wstring::npos
+        || wc.find(L"цiназпдв") != std::wstring::npos || wc.find(L"ценасндс") != std::wstring::npos
+        || wc.find(L"сндс") != std::wstring::npos || wc.find(L"зпдв") != std::wstring::npos;
+    if (with_vat) {
+        return "с НДС";
+    }
+    return {};
+}
+
+void MaybeNormalizeLineItemsVat(boost::json::object& root) {
+    auto it = root.find("lineItems");
+    if (it == root.end() || !it->value().is_array()) {
+        return;
+    }
+    std::string raw_text = JsonObjectGetString(root, "rawText");
+    const std::string doc_title = JsonObjectGetString(root, "documentTitle");
+    if (!doc_title.empty()) {
+        if (!raw_text.empty()) {
+            raw_text.push_back(' ');
+        }
+        raw_text += doc_title;
+    }
+    const bool zero_vat_total = ContainsZeroVatTotalHint(raw_text);
+    const std::string global_vat_type = InferGlobalPriceVatTypeFromRoot(root);
+    const std::string inferred_doc_vat_rate = InferVatRateFromDocumentTotals(raw_text);
+    boost::json::array& items = it->value().as_array();
+    for (boost::json::value& item_v : items) {
+        if (!item_v.is_object()) {
+            continue;
+        }
+        boost::json::object& item = item_v.as_object();
+        const std::string vat_rate_raw = JsonObjectGetString(item, "vatRate");
+        const std::string vat_type_raw = JsonObjectGetString(item, "priceVatType");
+
+        std::string vat_rate_norm = NormalizeVatRateText(vat_rate_raw);
+        std::string vat_type_norm = NormalizePriceVatTypeText(vat_type_raw, vat_rate_norm);
+        const std::string column_vat_type = NormalizePriceVatTypeText(
+            JsonObjectGetString(root, "priceColumnVatType"), std::string_view{});
+
+        if (vat_rate_norm.empty() && vat_type_norm == "без НДС") {
+            vat_rate_norm = "без НДС";
+        }
+        if (vat_type_norm.empty() && vat_rate_norm == "без НДС") {
+            vat_type_norm = "без НДС";
+        }
+        if (vat_type_norm.empty() && !vat_rate_norm.empty() && vat_rate_norm != "без НДС") {
+            vat_type_norm = "с НДС";
+        }
+        if (!column_vat_type.empty()) {
+            vat_type_norm = column_vat_type;
+        }
+        if (vat_type_norm.empty() && !global_vat_type.empty()) {
+            vat_type_norm = global_vat_type;
+        }
+        if (vat_type_norm.empty() && zero_vat_total) {
+            vat_type_norm = "без НДС";
+        }
+        if (vat_rate_norm.empty() && !inferred_doc_vat_rate.empty()) {
+            vat_rate_norm = inferred_doc_vat_rate;
+        }
+        if (vat_rate_norm.empty() && zero_vat_total) {
+            vat_rate_norm = "0%";
+        }
+
+        if (!vat_rate_norm.empty() || !vat_rate_raw.empty()) {
+            item["vatRate"] = vat_rate_norm;
+        }
+        if (!vat_type_norm.empty() || !vat_type_raw.empty()) {
+            item["priceVatType"] = vat_type_norm;
+        }
+    }
+}
+
+void ForceCopyPriceColumnVatTypeToLines(boost::json::object& root) {
+    const std::string raw_column_vat_type = JsonObjectGetString(root, "priceColumnVatType");
+    std::string trimmed = raw_column_vat_type;
+    TrimAsciiInPlace(trimmed);
+    if (trimmed.empty()) {
+        return;
+    }
+    auto it = root.find("lineItems");
+    if (it == root.end() || !it->value().is_array()) {
+        return;
+    }
+    boost::json::array& items = it->value().as_array();
+    for (boost::json::value& item_v : items) {
+        if (!item_v.is_object()) {
+            continue;
+        }
+        boost::json::object& item = item_v.as_object();
+        item["priceVatType"] = raw_column_vat_type;
     }
 }
 
@@ -852,6 +1237,8 @@ std::string GeminiExtractPrimaryDocumentJsonImpl(const std::string& api_key_utf8
         boost::json::value parsed = boost::json::parse(inner);
         if (parsed.is_object()) {
             MaybeEnrichDocumentType(parsed.as_object());
+            MaybeNormalizeLineItemsVat(parsed.as_object());
+            ForceCopyPriceColumnVatTypeToLines(parsed.as_object());
         }
         return boost::json::serialize(parsed);
     } catch (const std::exception& e) {
