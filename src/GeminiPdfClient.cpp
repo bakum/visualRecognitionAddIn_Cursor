@@ -3,14 +3,29 @@
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
+#if defined(_WIN32)
 #include <Windows.h>
 #include <winhttp.h>
+#endif
 
 #include <boost/json.hpp>
+#if !defined(_WIN32)
+#include <boost/asio/connect.hpp>
+#include <boost/asio/ip/tcp.hpp>
+#include <boost/asio/ssl/context.hpp>
+#include <boost/asio/ssl/stream.hpp>
+#include <boost/beast/core.hpp>
+#include <boost/beast/http.hpp>
+#include <boost/beast/ssl.hpp>
+#include <boost/beast/version.hpp>
+#endif
 
 #include <algorithm>
 #include <cctype>
+#include <codecvt>
+#include <cwctype>
 #include <limits>
+#include <locale>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -18,9 +33,15 @@
 
 namespace {
 
+constexpr char kHostUtf8[] = "generativelanguage.googleapis.com";
+#if defined(_WIN32)
 constexpr wchar_t kHost[] = L"generativelanguage.googleapis.com";
 constexpr wchar_t kPathPrefix[] = L"/v1beta/models/";
 constexpr wchar_t kPathSuffix[] = L":generateContent";
+#else
+constexpr char kPathPrefix[] = "/v1beta/models/";
+constexpr char kPathSuffix[] = ":generateContent";
+#endif
 
 void TrimAsciiInPlace(std::string& s) {
     while (!s.empty() && (static_cast<unsigned char>(s.front()) <= ' ')) {
@@ -55,6 +76,7 @@ std::wstring Utf8ToWide(std::string_view u8) {
     if (u8.empty()) {
         return {};
     }
+#if defined(_WIN32)
     const int n = MultiByteToWideChar(CP_UTF8, 0, u8.data(), static_cast<int>(u8.size()), nullptr, 0);
     if (n <= 0) {
         return {};
@@ -62,6 +84,10 @@ std::wstring Utf8ToWide(std::string_view u8) {
     std::wstring w(static_cast<size_t>(n), L'\0');
     MultiByteToWideChar(CP_UTF8, 0, u8.data(), static_cast<int>(u8.size()), w.data(), n);
     return w;
+#else
+    static std::wstring_convert<std::codecvt_utf8_utf16<wchar_t>> cvt_utf8_utf16;
+    return cvt_utf8_utf16.from_bytes(u8.data(), u8.data() + u8.size());
+#endif
 }
 
 /// Допустимые символы в id модели Gemini (исключаем / ? # для пути WinHTTP).
@@ -325,6 +351,7 @@ bool HttpPostGemini(const std::string& api_key_utf8,
                     unsigned long& status_out,
                     std::string& response_body_out,
                     std::string& error_out) {
+#if defined(_WIN32)
     const std::wstring path =
         std::wstring(kPathPrefix) + Utf8ToWide(model_id_utf8) + kPathSuffix;
     const std::wstring wkey = Utf8ToWide(api_key_utf8);
@@ -420,6 +447,61 @@ bool HttpPostGemini(const std::string& api_key_utf8,
     WinHttpCloseHandle(connect);
     WinHttpCloseHandle(session);
     return ok;
+#else
+    namespace beast = boost::beast;
+    namespace http = beast::http;
+    namespace net = boost::asio;
+    namespace ssl = boost::asio::ssl;
+    using tcp = net::ip::tcp;
+
+    try {
+        const std::string path = std::string(kPathPrefix) + model_id_utf8 + kPathSuffix;
+        net::io_context ioc;
+        ssl::context ctx(ssl::context::tls_client);
+        ctx.set_default_verify_paths();
+
+        tcp::resolver resolver(ioc);
+        beast::ssl_stream<beast::tcp_stream> stream(ioc, ctx);
+        if (!SSL_set_tlsext_host_name(stream.native_handle(), kHostUtf8)) {
+            error_out = "Gemini API TLS error (SNI)";
+            return false;
+        }
+
+        const auto results = resolver.resolve(kHostUtf8, "443");
+        beast::get_lowest_layer(stream).connect(results);
+        stream.handshake(ssl::stream_base::client);
+
+        http::request<http::string_body> req{http::verb::post, path, 11};
+        req.set(http::field::host, kHostUtf8);
+        req.set(http::field::user_agent, "VisualRecognitionAddIn/1.0");
+        req.set("x-goog-api-key", api_key_utf8);
+        req.set(http::field::content_type, "application/json");
+        req.body() = body_utf8;
+        req.prepare_payload();
+
+        http::write(stream, req);
+
+        beast::flat_buffer buffer;
+        http::response<http::string_body> res;
+        http::read(stream, buffer, res);
+        status_out = static_cast<unsigned long>(res.result_int());
+        response_body_out = std::move(res.body());
+
+        beast::error_code ec;
+        stream.shutdown(ec);
+        if (ec == net::error::eof) {
+            ec = {};
+        }
+        if (ec) {
+            error_out = "Gemini API TLS shutdown error";
+            return false;
+        }
+        return true;
+    } catch (const std::exception& e) {
+        error_out = std::string("Gemini API network error: ") + e.what();
+        return false;
+    }
+#endif
 }
 
 std::optional<std::string> ExtractGeminiApiErrorMessage(const std::string& json) {
@@ -648,7 +730,8 @@ std::string InferDocumentTypeFromTitle(std::string_view title_utf8) {
     if (w.empty()) {
         return {};
     }
-    ::CharLowerBuffW(w.data(), static_cast<DWORD>(w.size()));
+    std::transform(w.begin(), w.end(), w.begin(),
+                   [](wchar_t ch) { return std::towlower(ch); });
 
     const bool incoming_ru = WideContains(w, L"приход") && WideContains(w, L"наклад");
     const bool incoming_ua = WideContains(w, L"прибут") && WideContains(w, L"наклад");

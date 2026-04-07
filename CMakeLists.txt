@@ -10,7 +10,7 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-set(BOOST_ROOT "E:/boost/boost_1_84_0" CACHE PATH "Root of unpacked Boost (directory containing boost/)")
+set(BOOST_ROOT "" CACHE PATH "Optional Boost root (directory containing boost/)")
 
 # --- Target: Windows DLL for 1C ---
 add_library(VisualRecognitionAddIn SHARED
@@ -25,8 +25,10 @@ target_include_directories(VisualRecognitionAddIn
     PRIVATE
         "${CMAKE_CURRENT_SOURCE_DIR}/src"
         "${CMAKE_CURRENT_SOURCE_DIR}/third_party/1c-addin"
-        "${BOOST_ROOT}"
 )
+if(BOOST_ROOT)
+    target_include_directories(VisualRecognitionAddIn PRIVATE "${BOOST_ROOT}")
+endif()
 
 target_compile_definitions(VisualRecognitionAddIn PRIVATE
     BOOST_ALL_NO_LIB
@@ -46,6 +48,21 @@ if(WIN32)
     set_target_properties(VisualRecognitionAddIn PROPERTIES
         OUTPUT_NAME "${_VIS_ADDIN_OUTPUT_NAME}"
         WINDOWS_EXPORT_ALL_SYMBOLS ON
+    )
+else()
+    # Linux HTTPS path for Gemini (Boost.Beast + OpenSSL).
+    find_package(OpenSSL REQUIRED)
+    find_package(Threads REQUIRED)
+    target_link_libraries(VisualRecognitionAddIn PRIVATE OpenSSL::SSL OpenSSL::Crypto Threads::Threads)
+    # Keep 1C naming convention on Linux: visualAddInLin32.so / visualAddInLin64.so.
+    if(CMAKE_SIZEOF_VOID_P EQUAL 8)
+        set(_VIS_ADDIN_OUTPUT_NAME visualAddInLin64)
+    else()
+        set(_VIS_ADDIN_OUTPUT_NAME visualAddInLin32)
+    endif()
+    set_target_properties(VisualRecognitionAddIn PROPERTIES
+        OUTPUT_NAME "${_VIS_ADDIN_OUTPUT_NAME}"
+        PREFIX ""
     )
 endif()
 

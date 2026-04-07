@@ -19,11 +19,6 @@
 
 #include "VisualAddIn.h"
 
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
-#include <Windows.h>
-
 #include <cctype>
 #include <cstdint>
 #include <memory>
