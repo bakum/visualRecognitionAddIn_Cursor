@@ -22,6 +22,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <chrono>
 #include <cmath>
 #include <codecvt>
 #include <cwctype>
@@ -31,6 +32,7 @@
 #include <sstream>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <vector>
 
 namespace {
@@ -295,6 +297,8 @@ std::string BuildRequestBody(std::string_view mime_type, const std::string& inli
         "documents the same role is ЄДРПОУ (typically 8 digits for legal entities) — put that value "
         "in supplierOkpo/buyerOkpo when it is the party's registration/statistical code, even if also "
         "in supplierInn. If absent, \"\". Do not put the buyer's code into supplierOkpo. "
+        "For contract.numberAndDetails: the sign № (and prefixes like N/Nr) is not part of the value; "
+        "remove it and keep only meaningful contract details/identifier text. "
         "Field documentTitle: the visible printed document title or form name at the top (e.g. "
         "\"Счет на оплату\", \"Приходная накладная\", \"Акт выполненных работ\"); use \"\" if absent. "
         "Field documentType: infer from documentTitle (and header wording) — exactly one enum: "
@@ -375,6 +379,12 @@ bool HttpPostGemini(const std::string& api_key_utf8,
                     std::string& response_body_out,
                     std::string& error_out) {
 #if defined(_WIN32)
+    const auto is_transient_winhttp_error = [](DWORD e) -> bool {
+        return e == ERROR_WINHTTP_TIMEOUT || e == ERROR_WINHTTP_NAME_NOT_RESOLVED
+            || e == ERROR_WINHTTP_CANNOT_CONNECT || e == ERROR_WINHTTP_CONNECTION_ERROR
+            || e == ERROR_WINHTTP_RESEND_REQUEST || e == ERROR_WINHTTP_INTERNAL_ERROR;
+    };
+
     const std::wstring path =
         std::wstring(kPathPrefix) + Utf8ToWide(model_id_utf8) + kPathSuffix;
     const std::wstring wkey = Utf8ToWide(api_key_utf8);
@@ -386,6 +396,8 @@ bool HttpPostGemini(const std::string& api_key_utf8,
         error_out = "Gemini API network error (WinHttpOpen)";
         return false;
     }
+    // Higher network timeouts for large model responses and temporary API load spikes.
+    WinHttpSetTimeouts(session, 10000, 10000, 30000, 120000);
 
     bool ok = false;
     HINTERNET connect =
@@ -396,77 +408,97 @@ bool HttpPostGemini(const std::string& api_key_utf8,
         return false;
     }
 
-    HINTERNET request =
-        WinHttpOpenRequest(connect, L"POST", path.c_str(), nullptr, WINHTTP_NO_REFERER,
-                           WINHTTP_DEFAULT_ACCEPT_TYPES, WINHTTP_FLAG_SECURE);
-    if (!request) {
-        error_out = "Gemini API network error (WinHttpOpenRequest)";
-        WinHttpCloseHandle(connect);
-        WinHttpCloseHandle(session);
-        return false;
-    }
-
     const std::wstring hdr_key = L"x-goog-api-key: " + wkey;
     std::wstring headers = hdr_key + L"\r\nContent-Type: application/json\r\n";
+    constexpr int kMaxAttempts = 3;
+    for (int attempt = 1; attempt <= kMaxAttempts; ++attempt) {
+        HINTERNET request =
+            WinHttpOpenRequest(connect, L"POST", path.c_str(), nullptr, WINHTTP_NO_REFERER,
+                               WINHTTP_DEFAULT_ACCEPT_TYPES, WINHTTP_FLAG_SECURE);
+        if (!request) {
+            const DWORD e = GetLastError();
+            error_out = "Gemini API network error (WinHttpOpenRequest, code=" + std::to_string(e) + ")";
+            continue;
+        }
+        WinHttpSetTimeouts(request, 10000, 10000, 30000, 120000);
 
-    const BOOL sent =
-        WinHttpSendRequest(request, headers.c_str(), static_cast<DWORD>(-1),
-                           const_cast<char*>(body_utf8.data()), static_cast<DWORD>(body_utf8.size()),
-                           static_cast<DWORD>(body_utf8.size()), 0);
-
-    if (!sent) {
-        error_out = "Gemini API network error (WinHttpSendRequest)";
-        WinHttpCloseHandle(request);
-        WinHttpCloseHandle(connect);
-        WinHttpCloseHandle(session);
-        return false;
-    }
-
-    if (!WinHttpReceiveResponse(request, nullptr)) {
-        error_out = "Gemini API network error (WinHttpReceiveResponse)";
-        WinHttpCloseHandle(request);
-        WinHttpCloseHandle(connect);
-        WinHttpCloseHandle(session);
-        return false;
-    }
-
-    DWORD status = 0;
-    DWORD sz = sizeof(status);
-    if (WinHttpQueryHeaders(request,
-                            WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
-                            WINHTTP_HEADER_NAME_BY_INDEX, &status, &sz, WINHTTP_NO_HEADER_INDEX)) {
-        status_out = status;
-    } else {
-        status_out = 0;
-    }
-
-    response_body_out.clear();
-    for (;;) {
-        DWORD avail = 0;
-        if (!WinHttpQueryDataAvailable(request, &avail)) {
-            error_out = "Gemini API network error (WinHttpQueryDataAvailable)";
+        const BOOL sent =
+            WinHttpSendRequest(request, headers.c_str(), static_cast<DWORD>(-1),
+                               const_cast<char*>(body_utf8.data()), static_cast<DWORD>(body_utf8.size()),
+                               static_cast<DWORD>(body_utf8.size()), 0);
+        if (!sent) {
+            const DWORD e = GetLastError();
+            error_out = "Gemini API network error (WinHttpSendRequest, code=" + std::to_string(e) + ")";
             WinHttpCloseHandle(request);
+            if (is_transient_winhttp_error(e) && attempt < kMaxAttempts) {
+                Sleep(250);
+                continue;
+            }
             WinHttpCloseHandle(connect);
             WinHttpCloseHandle(session);
             return false;
         }
-        if (avail == 0) {
+
+        if (!WinHttpReceiveResponse(request, nullptr)) {
+            const DWORD e = GetLastError();
+            error_out = "Gemini API network error (WinHttpReceiveResponse, code=" + std::to_string(e) + ")";
+            WinHttpCloseHandle(request);
+            if (is_transient_winhttp_error(e) && attempt < kMaxAttempts) {
+                Sleep(300);
+                continue;
+            }
+            WinHttpCloseHandle(connect);
+            WinHttpCloseHandle(session);
+            return false;
+        }
+
+        DWORD status = 0;
+        DWORD sz = sizeof(status);
+        if (WinHttpQueryHeaders(request,
+                                WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
+                                WINHTTP_HEADER_NAME_BY_INDEX, &status, &sz, WINHTTP_NO_HEADER_INDEX)) {
+            status_out = status;
+        } else {
+            status_out = 0;
+        }
+
+        response_body_out.clear();
+        bool read_ok = true;
+        for (;;) {
+            DWORD avail = 0;
+            if (!WinHttpQueryDataAvailable(request, &avail)) {
+                const DWORD e = GetLastError();
+                error_out = "Gemini API network error (WinHttpQueryDataAvailable, code="
+                    + std::to_string(e) + ")";
+                read_ok = false;
+                break;
+            }
+            if (avail == 0) {
+                break;
+            }
+            std::vector<char> chunk(static_cast<size_t>(avail));
+            DWORD read = 0;
+            if (!WinHttpReadData(request, chunk.data(), avail, &read)) {
+                const DWORD e = GetLastError();
+                error_out = "Gemini API network error (WinHttpReadData, code=" + std::to_string(e) + ")";
+                read_ok = false;
+                break;
+            }
+            response_body_out.append(chunk.data(), read);
+        }
+        WinHttpCloseHandle(request);
+        if (read_ok) {
+            ok = true;
             break;
         }
-        std::vector<char> chunk(static_cast<size_t>(avail));
-        DWORD read = 0;
-        if (!WinHttpReadData(request, chunk.data(), avail, &read)) {
-            error_out = "Gemini API network error (WinHttpReadData)";
-            WinHttpCloseHandle(request);
-            WinHttpCloseHandle(connect);
-            WinHttpCloseHandle(session);
-            return false;
-        }
-        response_body_out.append(chunk.data(), read);
     }
 
-    ok = true;
-    WinHttpCloseHandle(request);
+    if (!ok) {
+        WinHttpCloseHandle(connect);
+        WinHttpCloseHandle(session);
+        return false;
+    }
+
     WinHttpCloseHandle(connect);
     WinHttpCloseHandle(session);
     return ok;
@@ -572,6 +604,20 @@ std::optional<std::string> ExtractPromptBlockMessage(const std::string& json) {
     } catch (...) {
         return std::nullopt;
     }
+}
+
+bool IsTransientGeminiOverload(unsigned long http_status, const std::optional<std::string>& api_err) {
+    if (http_status == 429UL || http_status == 503UL) {
+        return true;
+    }
+    if (!api_err.has_value()) {
+        return false;
+    }
+    std::string s = *api_err;
+    std::transform(s.begin(), s.end(), s.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    return s.find("high demand") != std::string::npos || s.find("try again later") != std::string::npos
+        || s.find("resource exhausted") != std::string::npos || s.find("temporar") != std::string::npos;
 }
 
 std::optional<std::string> ExtractCandidateText(const std::string& json) {
@@ -869,11 +915,11 @@ std::string InferVatRateFromDocumentTotals(std::string_view text_utf8) {
                    [](wchar_t ch) { return std::towlower(ch); });
 
     const auto vat_sum = ExtractNumberAfterAnyLabel(
-        w, {L"сума пдв", L"сумма ндс", L"итого ндс", L"ндс:", L"пдв:"});
+        w, {L"сума пдв", L"сумма ндс", L"итого ндс", L"у т.ч. пдв", L"в т.ч. ндс", L"ндс:", L"пдв:"});
     const auto base_sum = ExtractNumberAfterAnyLabel(
         w, {L"всього без пдв", L"разом без пдв", L"всего без ндс", L"итого без ндс"});
     const auto total_sum = ExtractNumberAfterAnyLabel(
-        w, {L"всього з пдв", L"разом з пдв", L"всего с ндс", L"итого с ндс"});
+        w, {L"всього з пдв", L"разом з пдв", L"всего с ндс", L"итого с ндс", L"всього:", L"разом:", L"всего:"});
 
     if (vat_sum.has_value() && vat_sum.value() == 0.0) {
         return "0%";
@@ -945,6 +991,78 @@ void MaybeEnrichDocumentType(boost::json::object& root) {
     if (!inferred.empty()) {
         root["documentType"] = inferred;
     }
+}
+
+std::string NormalizeContractNumberAndDetailsText(std::string_view in_utf8) {
+    std::string s(in_utf8);
+    TrimAsciiInPlace(s);
+    if (s.empty()) {
+        return {};
+    }
+
+    std::wstring w = Utf8ToWide(s);
+    if (w.empty()) {
+        return s;
+    }
+
+    std::wstring out;
+    out.reserve(w.size());
+    for (wchar_t ch : w) {
+        if (ch == L'№') {
+            continue;
+        }
+        out.push_back(ch);
+    }
+
+    // Remove leading "N", "N." or "Nr" prefixes after optional spaces.
+    size_t i = 0;
+    while (i < out.size() && std::iswspace(out[i]) != 0) {
+        ++i;
+    }
+    if (i < out.size() && (out[i] == L'N' || out[i] == L'n')) {
+        size_t j = i + 1;
+        if (j < out.size() && (out[j] == L'r' || out[j] == L'R')) {
+            ++j;
+        }
+        if (j < out.size() && out[j] == L'.') {
+            ++j;
+        }
+        while (j < out.size() && std::iswspace(out[j]) != 0) {
+            ++j;
+        }
+        out.erase(0, j);
+    }
+
+    std::string normalized;
+#if defined(_WIN32)
+    if (!out.empty()) {
+        const int n = WideCharToMultiByte(CP_UTF8, 0, out.data(), static_cast<int>(out.size()),
+                                          nullptr, 0, nullptr, nullptr);
+        if (n > 0) {
+            normalized.resize(static_cast<size_t>(n));
+            WideCharToMultiByte(CP_UTF8, 0, out.data(), static_cast<int>(out.size()),
+                                normalized.data(), n, nullptr, nullptr);
+        }
+    }
+#else
+    static std::wstring_convert<std::codecvt_utf8_utf16<wchar_t>> cvt_utf8_utf16;
+    normalized = cvt_utf8_utf16.to_bytes(out.data(), out.data() + out.size());
+#endif
+    TrimAsciiInPlace(normalized);
+    return normalized.empty() ? s : normalized;
+}
+
+void MaybeNormalizeContractFields(boost::json::object& root) {
+    auto it = root.find("contract");
+    if (it == root.end() || !it->value().is_object()) {
+        return;
+    }
+    boost::json::object& contract = it->value().as_object();
+    const std::string raw = JsonObjectGetString(contract, "numberAndDetails");
+    if (raw.empty()) {
+        return;
+    }
+    contract["numberAndDetails"] = NormalizeContractNumberAndDetailsText(raw);
 }
 
 std::string NormalizeVatRateText(std::string_view value_utf8) {
@@ -1199,12 +1317,19 @@ std::string GeminiExtractPrimaryDocumentJsonImpl(const std::string& api_key_utf8
 
     unsigned long http_status = 0;
     std::string raw_response;
-    if (!HttpPostGemini(api_key_utf8, model, body, http_status, raw_response, error_out)) {
-        return {};
-    }
-
-    if (http_status != 200UL) {
+    constexpr int kMaxApiAttempts = 3;
+    for (int attempt = 1; attempt <= kMaxApiAttempts; ++attempt) {
+        if (!HttpPostGemini(api_key_utf8, model, body, http_status, raw_response, error_out)) {
+            return {};
+        }
+        if (http_status == 200UL) {
+            break;
+        }
         const auto api_err = ExtractGeminiApiErrorMessage(raw_response);
+        if (IsTransientGeminiOverload(http_status, api_err) && attempt < kMaxApiAttempts) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(500 * attempt));
+            continue;
+        }
         if (api_err.has_value()) {
             error_out = *api_err;
         } else {
@@ -1237,6 +1362,7 @@ std::string GeminiExtractPrimaryDocumentJsonImpl(const std::string& api_key_utf8
         boost::json::value parsed = boost::json::parse(inner);
         if (parsed.is_object()) {
             MaybeEnrichDocumentType(parsed.as_object());
+            MaybeNormalizeContractFields(parsed.as_object());
             MaybeNormalizeLineItemsVat(parsed.as_object());
             ForceCopyPriceColumnVatTypeToLines(parsed.as_object());
         }
@@ -1282,12 +1408,19 @@ std::string GeminiGeneratePlainTextImpl(const std::string& api_key_utf8,
 
     unsigned long http_status = 0;
     std::string raw_response;
-    if (!HttpPostGemini(api_key_utf8, model, body, http_status, raw_response, error_out)) {
-        return {};
-    }
-
-    if (http_status != 200UL) {
+    constexpr int kMaxApiAttempts = 3;
+    for (int attempt = 1; attempt <= kMaxApiAttempts; ++attempt) {
+        if (!HttpPostGemini(api_key_utf8, model, body, http_status, raw_response, error_out)) {
+            return {};
+        }
+        if (http_status == 200UL) {
+            break;
+        }
         const auto api_err = ExtractGeminiApiErrorMessage(raw_response);
+        if (IsTransientGeminiOverload(http_status, api_err) && attempt < kMaxApiAttempts) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(500 * attempt));
+            continue;
+        }
         if (api_err.has_value()) {
             error_out = *api_err;
         } else {
