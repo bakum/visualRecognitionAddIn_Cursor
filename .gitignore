@@ -47,3 +47,7 @@ Thumbs.db
 Desktop.ini
 .DS_Store
 *~
+
+# --- Локальные рабочие промпты/ТЗ ---
+PROMPT_1C_JSON_MAPPING_UA.md
+TZ_1C_JSON_MAPPING_UA_TEMPLATE.md
