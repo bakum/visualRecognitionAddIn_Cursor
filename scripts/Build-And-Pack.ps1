@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
   Единый скрипт: сборка Win32 и Win64 (Release) и упаковка dist\visualRecognitionAddIn.zip.
@@ -27,6 +27,11 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+
+# Ensure Unicode (Cyrillic) output renders correctly in Windows terminals.
+[Console]::InputEncoding = [System.Text.UTF8Encoding]::new()
+[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new()
+$OutputEncoding = [Console]::OutputEncoding
 
 $ProjectRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $ResolvedOutDir = if ($OutDir) { $OutDir } else { (Join-Path $ProjectRoot 'dist') }

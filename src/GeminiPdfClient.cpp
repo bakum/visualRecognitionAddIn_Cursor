@@ -25,6 +25,7 @@
 #include <chrono>
 #include <cmath>
 #include <codecvt>
+#include <iomanip>
 #include <cwctype>
 #include <limits>
 #include <locale>
@@ -189,6 +190,7 @@ boost::json::object BuildInvoiceResponseSchema() {
     root_props["counterparty"] = counterparty;
     root_props["contract"] = contract;
     root_props["invoiceNumber"] = boost::json::object({{"type", "string"}});
+    root_props["documentDate"] = boost::json::object({{"type", "string"}});
     root_props["documentTitle"] = boost::json::object({{"type", "string"}});
     root_props["documentType"] = document_type_field;
     root_props["bankDetails"] = bank;
@@ -203,6 +205,7 @@ boost::json::object BuildInvoiceResponseSchema() {
     req.push_back("counterparty");
     req.push_back("contract");
     req.push_back("invoiceNumber");
+    req.push_back("documentDate");
     req.push_back("documentTitle");
     req.push_back("documentType");
     req.push_back("bankDetails");
@@ -299,6 +302,8 @@ std::string BuildRequestBody(std::string_view mime_type, const std::string& inli
         "in supplierInn. If absent, \"\". Do not put the buyer's code into supplierOkpo. "
         "For contract.numberAndDetails: the sign № (and prefixes like N/Nr) is not part of the value; "
         "remove it and keep only meaningful contract details/identifier text. "
+        "Field documentDate: date of the current primary document itself (invoice/act/waybill date), "
+        "not the contract date; output strictly in YYYY/mm/dd format, or \"\" if absent/unclear. "
         "Field documentTitle: the visible printed document title or form name at the top (e.g. "
         "\"Счет на оплату\", \"Приходная накладная\", \"Акт выполненных работ\"); use \"\" if absent. "
         "Field documentType: infer from documentTitle (and header wording) — exactly one enum: "
@@ -1052,17 +1057,113 @@ std::string NormalizeContractNumberAndDetailsText(std::string_view in_utf8) {
     return normalized.empty() ? s : normalized;
 }
 
+bool IsLeapYear(int year) {
+    return (year % 400 == 0) || ((year % 4 == 0) && (year % 100 != 0));
+}
+
+int DaysInMonth(int year, int month) {
+    if (month < 1 || month > 12) {
+        return 0;
+    }
+    static const int kDays[] = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
+    if (month == 2) {
+        return IsLeapYear(year) ? 29 : 28;
+    }
+    return kDays[month - 1];
+}
+
+bool IsValidYmd(int year, int month, int day) {
+    if (year < 1900 || year > 2100) {
+        return false;
+    }
+    const int dim = DaysInMonth(year, month);
+    return dim > 0 && day >= 1 && day <= dim;
+}
+
+std::string FormatYmdSlash(int year, int month, int day) {
+    std::ostringstream oss;
+    oss << std::setfill('0') << std::setw(4) << year << "/" << std::setw(2) << month << "/"
+        << std::setw(2) << day;
+    return oss.str();
+}
+
+std::string NormalizeDocumentDateToYmdSlash(std::string_view value_utf8) {
+    std::string s(value_utf8);
+    TrimAsciiInPlace(s);
+    if (s.empty()) {
+        return {};
+    }
+
+    if (s.size() == 8U && std::all_of(s.begin(), s.end(), [](unsigned char ch) { return std::isdigit(ch) != 0; })) {
+        const int year = std::stoi(s.substr(0, 4));
+        const int month = std::stoi(s.substr(4, 2));
+        const int day = std::stoi(s.substr(6, 2));
+        if (IsValidYmd(year, month, day)) {
+            return FormatYmdSlash(year, month, day);
+        }
+    }
+
+    std::vector<int> nums;
+    nums.reserve(8);
+    int current = -1;
+    for (char ch : s) {
+        const unsigned char uc = static_cast<unsigned char>(ch);
+        if (std::isdigit(uc) != 0) {
+            const int digit = static_cast<int>(ch - '0');
+            current = (current < 0) ? digit : (current * 10 + digit);
+        } else if (current >= 0) {
+            nums.push_back(current);
+            current = -1;
+        }
+    }
+    if (current >= 0) {
+        nums.push_back(current);
+    }
+    if (nums.size() < 3U) {
+        return {};
+    }
+
+    for (size_t i = 0; i + 2U < nums.size(); ++i) {
+        const int a = nums[i];
+        const int b = nums[i + 1U];
+        const int c = nums[i + 2U];
+        if (IsValidYmd(a, b, c)) {
+            return FormatYmdSlash(a, b, c); // YYYY/MM/DD
+        }
+        if (IsValidYmd(c, b, a)) {
+            return FormatYmdSlash(c, b, a); // DD/MM/YYYY
+        }
+    }
+    return {};
+}
+
+void MaybeNormalizeDocumentDateField(boost::json::object& root) {
+    auto it = root.find("documentDate");
+    if (it == root.end()) {
+        return;
+    }
+    const std::string raw = JsonObjectGetString(root, "documentDate");
+    if (raw.empty()) {
+        return;
+    }
+    root["documentDate"] = NormalizeDocumentDateToYmdSlash(raw);
+}
+
 void MaybeNormalizeContractFields(boost::json::object& root) {
     auto it = root.find("contract");
     if (it == root.end() || !it->value().is_object()) {
         return;
     }
     boost::json::object& contract = it->value().as_object();
-    const std::string raw = JsonObjectGetString(contract, "numberAndDetails");
-    if (raw.empty()) {
-        return;
+    const std::string raw_number = JsonObjectGetString(contract, "numberAndDetails");
+    if (!raw_number.empty()) {
+        contract["numberAndDetails"] = NormalizeContractNumberAndDetailsText(raw_number);
     }
-    contract["numberAndDetails"] = NormalizeContractNumberAndDetailsText(raw);
+
+    const std::string raw_date = JsonObjectGetString(contract, "date");
+    if (!raw_date.empty()) {
+        contract["date"] = NormalizeDocumentDateToYmdSlash(raw_date);
+    }
 }
 
 std::string NormalizeVatRateText(std::string_view value_utf8) {
@@ -1362,6 +1463,7 @@ std::string GeminiExtractPrimaryDocumentJsonImpl(const std::string& api_key_utf8
         boost::json::value parsed = boost::json::parse(inner);
         if (parsed.is_object()) {
             MaybeEnrichDocumentType(parsed.as_object());
+            MaybeNormalizeDocumentDateField(parsed.as_object());
             MaybeNormalizeContractFields(parsed.as_object());
             MaybeNormalizeLineItemsVat(parsed.as_object());
             ForceCopyPriceColumnVatTypeToLines(parsed.as_object());

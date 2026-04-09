@@ -71,7 +71,7 @@ Windows DLL для платформы **1С:Предприятие**: струк
 
 ## Формат успешного JSON
 
-Задаётся промптом к Gemini; ориентировочно: `counterparty`, `contract`, `invoiceNumber`, `bankDetails`, `lineItems`, `rawText` и др. Точный набор полей зависит от ответа модели.
+Задаётся промптом к Gemini; ориентировочно: `counterparty`, `contract`, `invoiceNumber`, `documentDate`, `bankDetails`, `lineItems`, `rawText` и др. Точный набор полей зависит от ответа модели.
 
 ## Примеры для 1С (BSL)
 
