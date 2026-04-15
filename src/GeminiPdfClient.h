@@ -27,7 +27,8 @@ std::string GeminiExtractPrimaryDocumentJson(const std::string& api_key_utf8,
                                              const std::vector<char>& pdf_bytes,
                                              std::string& error_out,
                                              GeminiUsageStats* usage_out = nullptr,
-                                             const GeminiHttpTimeouts* timeouts = nullptr);
+                                             const GeminiHttpTimeouts* timeouts = nullptr,
+                                             std::string* raw_response_out = nullptr);
 
 /// Растровое изображение (JPEG/PNG/GIF/WebP/BMP/TIFF по сигнатуре). PDF не принимается — для PDF используйте PdfИИ.
 std::string GeminiExtractPrimaryDocumentJsonFromImageBytes(const std::string& api_key_utf8,
@@ -35,7 +36,8 @@ std::string GeminiExtractPrimaryDocumentJsonFromImageBytes(const std::string& ap
                                                            const std::vector<char>& image_bytes,
                                                            std::string& error_out,
                                                            GeminiUsageStats* usage_out = nullptr,
-                                                           const GeminiHttpTimeouts* timeouts = nullptr);
+                                                           const GeminiHttpTimeouts* timeouts = nullptr,
+                                                           std::string* raw_response_out = nullptr);
 
 /// Произвольный текстовый запрос к Gemini без схемы JSON и без разбора первички; ответ — обычная строка модели (UTF-8).
 std::string GeminiGeneratePlainText(const std::string& api_key_utf8,
@@ -43,7 +45,8 @@ std::string GeminiGeneratePlainText(const std::string& api_key_utf8,
                                     const std::string& user_text_utf8,
                                     std::string& error_out,
                                     GeminiUsageStats* usage_out = nullptr,
-                                    const GeminiHttpTimeouts* timeouts = nullptr);
+                                    const GeminiHttpTimeouts* timeouts = nullptr,
+                                    std::string* raw_response_out = nullptr);
 
 /// Каталог рекомендуемых моделей (UTF-8 JSON): defaultModelId, models[{id,name,notes}], подсказки. Ключ API не нужен.
 std::string GeminiSupportedModelsCatalogJson();

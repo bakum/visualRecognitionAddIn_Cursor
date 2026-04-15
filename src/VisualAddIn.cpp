@@ -137,6 +137,7 @@ constexpr int32_t kErrTextPromptTooLarge = 10;
 constexpr int32_t kErrUnknown = 99;
 constexpr int32_t kGeminiFastProfileReceiveTimeoutMs = 20000;
 constexpr int32_t kGeminiFastProfileTotalDeadlineMs = 30000;
+constexpr size_t kGeminiRawPreviewMaxBytes = 4096U;
 
 void SetLastErrorPair(const std::shared_ptr<variant_t>& code_storage,
                       const std::shared_ptr<variant_t>& text_storage,
@@ -265,6 +266,13 @@ std::string UsageJsonFromStats(const GeminiUsageStats& usage) {
     return std::string(boost::json::serialize(o));
 }
 
+std::string MakeUtf8Preview(const std::string& s, const size_t max_bytes) {
+    if (s.size() <= max_bytes) {
+        return s;
+    }
+    return s.substr(0, max_bytes) + "...(truncated)";
+}
+
 } // namespace
 
 VisualAddIn::VisualAddIn()
@@ -277,7 +285,8 @@ VisualAddIn::VisualAddIn()
       last_prompt_tokens_storage_(std::make_shared<variant_t>(0.0)),
       last_output_tokens_storage_(std::make_shared<variant_t>(0.0)),
       last_total_tokens_storage_(std::make_shared<variant_t>(0.0)),
-      last_usage_json_storage_(std::make_shared<variant_t>(std::string("{}"))) {
+      last_usage_json_storage_(std::make_shared<variant_t>(std::string("{}"))),
+      last_gemini_raw_response_preview_storage_(std::make_shared<variant_t>(std::string())) {
     AddProperty(
         u"Version",
         u"Версия",
@@ -313,6 +322,8 @@ VisualAddIn::VisualAddIn()
     AddProperty(u"LastOutputTokens", u"ПоследниеИсходящиеТокены", last_output_tokens_storage_);
     AddProperty(u"LastTotalTokens", u"ПоследниеВсегоТокенов", last_total_tokens_storage_);
     AddProperty(u"LastGeminiUsageJson", u"ПоследняяСтатистикаТокеновJSON", last_usage_json_storage_);
+    AddProperty(u"LastGeminiRawResponsePreview", u"ПоследнийСыройОтветGeminiПревью",
+                last_gemini_raw_response_preview_storage_);
 
     // Перший аргумент AddMethod — англійська назва (lang=0), другий — російська (lang=1).
     // Два варіанти PDF викликають той самий Gemini-шлях (старий код 1С без «ИИ» у імені).
@@ -373,6 +384,9 @@ void VisualAddIn::ResetUsageStats() {
     if (last_usage_json_storage_) {
         *last_usage_json_storage_ = std::string("{}");
     }
+    if (last_gemini_raw_response_preview_storage_) {
+        *last_gemini_raw_response_preview_storage_ = std::string();
+    }
 }
 
 void VisualAddIn::SetUsageStats(const int64_t prompt_tokens,
@@ -421,11 +435,17 @@ variant_t VisualAddIn::ParsePrimaryDocumentGeminiFromBytes(const std::vector<cha
         gemini_total_deadline_ms_storage_, 65000, 5000, 600000);
     std::string gemini_err;
     GeminiUsageStats usage;
+    std::string raw_response;
     const std::string json =
         inline_as_pdf
-            ? GeminiExtractPrimaryDocumentJson(api_key, model_id, bytes, gemini_err, &usage, &timeouts)
+            ? GeminiExtractPrimaryDocumentJson(api_key, model_id, bytes, gemini_err, &usage, &timeouts,
+                                               &raw_response)
             : GeminiExtractPrimaryDocumentJsonFromImageBytes(api_key, model_id, bytes, gemini_err,
-                                                             &usage, &timeouts);
+                                                             &usage, &timeouts, &raw_response);
+    if (last_gemini_raw_response_preview_storage_) {
+        *last_gemini_raw_response_preview_storage_ =
+            MakeUtf8Preview(raw_response, kGeminiRawPreviewMaxBytes);
+    }
     SetUsageStats(usage.prompt_tokens, usage.output_tokens, usage.total_tokens, usage.has_usage);
     if (!gemini_err.empty()) {
         if (gemini_err == "Invalid Gemini model id") {
@@ -495,9 +515,14 @@ variant_t VisualAddIn::GenerateGeminiText(variant_t& prompt_utf8) {
         gemini_total_deadline_ms_storage_, 65000, 5000, 600000);
     std::string gemini_err;
     GeminiUsageStats usage;
+    std::string raw_response;
     const std::string text_out =
         GeminiGeneratePlainText(api_key, model_id, std::get<std::string>(prompt_utf8), gemini_err,
-                                &usage, &timeouts);
+                                &usage, &timeouts, &raw_response);
+    if (last_gemini_raw_response_preview_storage_) {
+        *last_gemini_raw_response_preview_storage_ =
+            MakeUtf8Preview(raw_response, kGeminiRawPreviewMaxBytes);
+    }
     SetUsageStats(usage.prompt_tokens, usage.output_tokens, usage.total_tokens, usage.has_usage);
     if (!gemini_err.empty()) {
         if (gemini_err == "Invalid Gemini model id" || gemini_err == "Empty prompt text"

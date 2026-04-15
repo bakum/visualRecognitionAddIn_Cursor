@@ -34,6 +34,7 @@ Windows DLL для платформы **1С:Предприятие**: струк
 | `LastOutputTokens` | `ПоследниеИсходящиеТокены` | Число | Количество выходных токенов (`candidatesTokenCount`) из `usageMetadata` последнего вызова Gemini. |
 | `LastTotalTokens` | `ПоследниеВсегоТокенов` | Число | Общее количество токенов (`totalTokenCount`) из `usageMetadata` последнего вызова Gemini. |
 | `LastGeminiUsageJson` | `ПоследняяСтатистикаТокеновJSON` | Строка | JSON-объект со статистикой токенов последнего вызова Gemini (`promptTokenCount`, `candidatesTokenCount`, `totalTokenCount`) или `{}` если данные не пришли. |
+| `LastGeminiRawResponsePreview` | `ПоследнийСыройОтветGeminiПревью` | Строка | Превью сырого JSON-ответа Gemini (до 4096 байт, затем `...(truncated)`). Полезно для диагностики ошибок парсинга/формата ответа. |
 
 ### Коды `ПоследняяОшибка` (`LastErrorCode`)
 
@@ -70,7 +71,7 @@ Windows DLL для платформы **1С:Предприятие**: струк
 
 При кодах **`5`** и **`6`** дополнительно выбрасывается **исключение** (неверный тип параметра).
 
-После вызовов Gemini (`РазобратьПервичныйДокумент*`, `РазобратьПервичныйДокументИзображениеИИ*`, `GenerateGeminiText`) статистика токенов доступна в свойствах `LastPromptTokens` / `LastOutputTokens` / `LastTotalTokens` и в `LastGeminiUsageJson`.
+После вызовов Gemini (`РазобратьПервичныйДокумент*`, `РазобратьПервичныйДокументИзображениеИИ*`, `GenerateGeminiText`) статистика токенов доступна в свойствах `LastPromptTokens` / `LastOutputTokens` / `LastTotalTokens` и в `LastGeminiUsageJson`. Для отладки сырого ответа используйте `LastGeminiRawResponsePreview` / `ПоследнийСыройОтветGeminiПревью`.
 
 ## Формат успешного JSON
 

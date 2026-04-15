@@ -818,6 +818,51 @@ std::string StripMarkdownJsonFence(std::string s) {
     return s;
 }
 
+// Best-effort repair for model JSON where string values contain invalid backslash escapes.
+std::string RepairLikelyInvalidJsonEscapes(std::string_view json) {
+    std::string out;
+    out.reserve(json.size() + json.size() / 16U);
+    bool in_string = false;
+    bool escape = false;
+    for (char ch : json) {
+        if (!in_string) {
+            out.push_back(ch);
+            if (ch == '"') {
+                in_string = true;
+            }
+            continue;
+        }
+
+        if (escape) {
+            const bool valid_simple = (ch == '"' || ch == '\\' || ch == '/' || ch == 'b'
+                                       || ch == 'f' || ch == 'n' || ch == 'r' || ch == 't'
+                                       || ch == 'u');
+            if (!valid_simple) {
+                // Keep the original slash as a literal char inside the JSON string.
+                out.push_back('\\');
+            }
+            out.push_back(ch);
+            escape = false;
+            continue;
+        }
+
+        if (ch == '\\') {
+            out.push_back('\\');
+            escape = true;
+            continue;
+        }
+
+        if (ch == '"') {
+            in_string = false;
+            out.push_back(ch);
+            continue;
+        }
+
+        out.push_back(ch);
+    }
+    return out;
+}
+
 std::string JsonObjectGetString(const boost::json::object& o, const char* key) {
     const auto it = o.find(key);
     if (it == o.end() || !it->value().is_string()) {
@@ -1423,8 +1468,12 @@ std::string GeminiExtractPrimaryDocumentJsonImpl(const std::string& api_key_utf8
                                                  const std::vector<char>& bytes,
                                                  std::string& error_out,
                                                  GeminiUsageStats* usage_out,
-                                                 const GeminiHttpTimeouts* timeouts) {
+                                                 const GeminiHttpTimeouts* timeouts,
+                                                 std::string* raw_response_out) {
     error_out.clear();
+    if (raw_response_out) {
+        raw_response_out->clear();
+    }
     if (api_key_utf8.empty()) {
         error_out = "API key is empty";
         return {};
@@ -1457,7 +1506,13 @@ std::string GeminiExtractPrimaryDocumentJsonImpl(const std::string& api_key_utf8
     constexpr int kMaxApiAttempts = 3;
     for (int attempt = 1; attempt <= kMaxApiAttempts; ++attempt) {
         if (!HttpPostGemini(api_key_utf8, model, body, timeouts, http_status, raw_response, error_out)) {
+            if (raw_response_out) {
+                *raw_response_out = raw_response;
+            }
             return {};
+        }
+        if (raw_response_out) {
+            *raw_response_out = raw_response;
         }
         if (http_status == 200UL) {
             break;
@@ -1506,8 +1561,21 @@ std::string GeminiExtractPrimaryDocumentJsonImpl(const std::string& api_key_utf8
         }
         return boost::json::serialize(parsed);
     } catch (const std::exception& e) {
-        error_out = std::string("Gemini JSON parse error: ") + e.what();
-        return {};
+        try {
+            const std::string repaired = RepairLikelyInvalidJsonEscapes(inner);
+            boost::json::value reparsed = boost::json::parse(repaired);
+            if (reparsed.is_object()) {
+                MaybeEnrichDocumentType(reparsed.as_object());
+                MaybeNormalizeDocumentDateField(reparsed.as_object());
+                MaybeNormalizeContractFields(reparsed.as_object());
+                MaybeNormalizeLineItemsVat(reparsed.as_object());
+                ForceCopyPriceColumnVatTypeToLines(reparsed.as_object());
+            }
+            return boost::json::serialize(reparsed);
+        } catch (...) {
+            error_out = std::string("Gemini JSON parse error: ") + e.what();
+            return {};
+        }
     }
 }
 
@@ -1516,8 +1584,12 @@ std::string GeminiGeneratePlainTextImpl(const std::string& api_key_utf8,
                                           const std::string& user_text_utf8,
                                           std::string& error_out,
                                           GeminiUsageStats* usage_out,
-                                          const GeminiHttpTimeouts* timeouts) {
+                                          const GeminiHttpTimeouts* timeouts,
+                                          std::string* raw_response_out) {
     error_out.clear();
+    if (raw_response_out) {
+        raw_response_out->clear();
+    }
     if (api_key_utf8.empty()) {
         error_out = "API key is empty";
         return {};
@@ -1550,7 +1622,13 @@ std::string GeminiGeneratePlainTextImpl(const std::string& api_key_utf8,
     constexpr int kMaxApiAttempts = 3;
     for (int attempt = 1; attempt <= kMaxApiAttempts; ++attempt) {
         if (!HttpPostGemini(api_key_utf8, model, body, timeouts, http_status, raw_response, error_out)) {
+            if (raw_response_out) {
+                *raw_response_out = raw_response;
+            }
             return {};
+        }
+        if (raw_response_out) {
+            *raw_response_out = raw_response;
         }
         if (http_status == 200UL) {
             break;
@@ -1591,9 +1669,11 @@ std::string GeminiExtractPrimaryDocumentJson(const std::string& api_key_utf8,
                                              const std::vector<char>& pdf_bytes,
                                              std::string& error_out,
                                              GeminiUsageStats* usage_out,
-                                             const GeminiHttpTimeouts* timeouts) {
+                                             const GeminiHttpTimeouts* timeouts,
+                                             std::string* raw_response_out) {
     return GeminiExtractPrimaryDocumentJsonImpl(api_key_utf8, model_id_utf8, "application/pdf",
-                                                pdf_bytes, error_out, usage_out, timeouts);
+                                                pdf_bytes, error_out, usage_out, timeouts,
+                                                raw_response_out);
 }
 
 std::string GeminiExtractPrimaryDocumentJsonFromImageBytes(const std::string& api_key_utf8,
@@ -1601,7 +1681,8 @@ std::string GeminiExtractPrimaryDocumentJsonFromImageBytes(const std::string& ap
                                                            const std::vector<char>& image_bytes,
                                                            std::string& error_out,
                                                            GeminiUsageStats* usage_out,
-                                                           const GeminiHttpTimeouts* timeouts) {
+                                                           const GeminiHttpTimeouts* timeouts,
+                                                           std::string* raw_response_out) {
     error_out.clear();
     if (api_key_utf8.empty()) {
         error_out = "API key is empty";
@@ -1621,7 +1702,7 @@ std::string GeminiExtractPrimaryDocumentJsonFromImageBytes(const std::string& ap
         return {};
     }
     return GeminiExtractPrimaryDocumentJsonImpl(api_key_utf8, model_id_utf8, *mime, image_bytes,
-                                                error_out, usage_out, timeouts);
+                                                error_out, usage_out, timeouts, raw_response_out);
 }
 
 std::string GeminiGeneratePlainText(const std::string& api_key_utf8,
@@ -1629,9 +1710,10 @@ std::string GeminiGeneratePlainText(const std::string& api_key_utf8,
                                     const std::string& user_text_utf8,
                                     std::string& error_out,
                                     GeminiUsageStats* usage_out,
-                                    const GeminiHttpTimeouts* timeouts) {
+                                    const GeminiHttpTimeouts* timeouts,
+                                    std::string* raw_response_out) {
     return GeminiGeneratePlainTextImpl(api_key_utf8, model_id_utf8, user_text_utf8, error_out,
-                                       usage_out, timeouts);
+                                       usage_out, timeouts, raw_response_out);
 }
 
 std::string GeminiSupportedModelsCatalogJson() {

@@ -66,6 +66,7 @@ private:
     std::shared_ptr<variant_t> last_output_tokens_storage_;
     std::shared_ptr<variant_t> last_total_tokens_storage_;
     std::shared_ptr<variant_t> last_usage_json_storage_;
+    std::shared_ptr<variant_t> last_gemini_raw_response_preview_storage_;
 
     variant_t ParsePrimaryDocumentGeminiFromBytes(const std::vector<char>& bytes, bool inline_as_pdf);
     void ResetUsageStats();
