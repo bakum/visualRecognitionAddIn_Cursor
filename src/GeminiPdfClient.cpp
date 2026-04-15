@@ -48,6 +48,14 @@ constexpr char kPathPrefix[] = "/v1beta/models/";
 constexpr char kPathSuffix[] = ":generateContent";
 #endif
 
+constexpr int kWinHttpResolveTimeoutMs = 10000;
+constexpr int kWinHttpConnectTimeoutMs = 10000;
+constexpr int kWinHttpSendTimeoutMs = 30000;
+constexpr int kWinHttpReceiveTimeoutMs = 45000;
+constexpr int kWinHttpTotalRequestDeadlineMs = 65000;
+constexpr int kWinHttpMinReceiveTimeoutMs = 1000;
+constexpr int kWinHttpMinTotalDeadlineMs = 5000;
+
 void TrimAsciiInPlace(std::string& s) {
     while (!s.empty() && (static_cast<unsigned char>(s.front()) <= ' ')) {
         s.erase(s.begin());
@@ -380,6 +388,7 @@ std::string BuildPlainTextRequestBody(const std::string& user_text_utf8) {
 bool HttpPostGemini(const std::string& api_key_utf8,
                     const std::string& model_id_utf8,
                     const std::string& body_utf8,
+                    const GeminiHttpTimeouts* timeouts,
                     unsigned long& status_out,
                     std::string& response_body_out,
                     std::string& error_out) {
@@ -393,6 +402,14 @@ bool HttpPostGemini(const std::string& api_key_utf8,
     const std::wstring path =
         std::wstring(kPathPrefix) + Utf8ToWide(model_id_utf8) + kPathSuffix;
     const std::wstring wkey = Utf8ToWide(api_key_utf8);
+    const int configured_receive_timeout_ms = std::max(
+        kWinHttpMinReceiveTimeoutMs,
+        (timeouts && timeouts->receive_timeout_ms > 0) ? timeouts->receive_timeout_ms
+                                                       : kWinHttpReceiveTimeoutMs);
+    const int configured_total_deadline_ms = std::max(
+        kWinHttpMinTotalDeadlineMs,
+        (timeouts && timeouts->total_deadline_ms > 0) ? timeouts->total_deadline_ms
+                                                      : kWinHttpTotalRequestDeadlineMs);
 
     HINTERNET session =
         WinHttpOpen(L"VisualRecognitionAddIn/1.0", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
@@ -401,8 +418,9 @@ bool HttpPostGemini(const std::string& api_key_utf8,
         error_out = "Gemini API network error (WinHttpOpen)";
         return false;
     }
-    // Higher network timeouts for large model responses and temporary API load spikes.
-    WinHttpSetTimeouts(session, 10000, 10000, 30000, 120000);
+    // Fail fast enough for UI usage: keep retries, but cap a single receive wait.
+    WinHttpSetTimeouts(session, kWinHttpResolveTimeoutMs, kWinHttpConnectTimeoutMs,
+                       kWinHttpSendTimeoutMs, configured_receive_timeout_ms);
 
     bool ok = false;
     HINTERNET connect =
@@ -416,7 +434,19 @@ bool HttpPostGemini(const std::string& api_key_utf8,
     const std::wstring hdr_key = L"x-goog-api-key: " + wkey;
     std::wstring headers = hdr_key + L"\r\nContent-Type: application/json\r\n";
     constexpr int kMaxAttempts = 3;
+    const auto started_at = std::chrono::steady_clock::now();
     for (int attempt = 1; attempt <= kMaxAttempts; ++attempt) {
+        const auto now = std::chrono::steady_clock::now();
+        const auto elapsed_ms =
+            std::chrono::duration_cast<std::chrono::milliseconds>(now - started_at).count();
+        const int remaining_total_ms =
+            configured_total_deadline_ms - static_cast<int>(elapsed_ms);
+        if (remaining_total_ms <= 0) {
+            error_out = "Gemini API timeout: total request deadline exceeded";
+            break;
+        }
+        const int receive_timeout_ms = std::min(configured_receive_timeout_ms, remaining_total_ms);
+
         HINTERNET request =
             WinHttpOpenRequest(connect, L"POST", path.c_str(), nullptr, WINHTTP_NO_REFERER,
                                WINHTTP_DEFAULT_ACCEPT_TYPES, WINHTTP_FLAG_SECURE);
@@ -425,7 +455,8 @@ bool HttpPostGemini(const std::string& api_key_utf8,
             error_out = "Gemini API network error (WinHttpOpenRequest, code=" + std::to_string(e) + ")";
             continue;
         }
-        WinHttpSetTimeouts(request, 10000, 10000, 30000, 120000);
+        WinHttpSetTimeouts(request, kWinHttpResolveTimeoutMs, kWinHttpConnectTimeoutMs,
+                           kWinHttpSendTimeoutMs, receive_timeout_ms);
 
         const BOOL sent =
             WinHttpSendRequest(request, headers.c_str(), static_cast<DWORD>(-1),
@@ -446,7 +477,11 @@ bool HttpPostGemini(const std::string& api_key_utf8,
 
         if (!WinHttpReceiveResponse(request, nullptr)) {
             const DWORD e = GetLastError();
-            error_out = "Gemini API network error (WinHttpReceiveResponse, code=" + std::to_string(e) + ")";
+            if (e == ERROR_WINHTTP_TIMEOUT) {
+                error_out = "Gemini API timeout in WinHttpReceiveResponse (code=12002)";
+            } else {
+                error_out = "Gemini API network error (WinHttpReceiveResponse, code=" + std::to_string(e) + ")";
+            }
             WinHttpCloseHandle(request);
             if (is_transient_winhttp_error(e) && attempt < kMaxAttempts) {
                 Sleep(300);
@@ -1387,7 +1422,8 @@ std::string GeminiExtractPrimaryDocumentJsonImpl(const std::string& api_key_utf8
                                                  std::string_view mime_type,
                                                  const std::vector<char>& bytes,
                                                  std::string& error_out,
-                                                 GeminiUsageStats* usage_out) {
+                                                 GeminiUsageStats* usage_out,
+                                                 const GeminiHttpTimeouts* timeouts) {
     error_out.clear();
     if (api_key_utf8.empty()) {
         error_out = "API key is empty";
@@ -1420,7 +1456,7 @@ std::string GeminiExtractPrimaryDocumentJsonImpl(const std::string& api_key_utf8
     std::string raw_response;
     constexpr int kMaxApiAttempts = 3;
     for (int attempt = 1; attempt <= kMaxApiAttempts; ++attempt) {
-        if (!HttpPostGemini(api_key_utf8, model, body, http_status, raw_response, error_out)) {
+        if (!HttpPostGemini(api_key_utf8, model, body, timeouts, http_status, raw_response, error_out)) {
             return {};
         }
         if (http_status == 200UL) {
@@ -1479,7 +1515,8 @@ std::string GeminiGeneratePlainTextImpl(const std::string& api_key_utf8,
                                           const std::string& model_id_utf8,
                                           const std::string& user_text_utf8,
                                           std::string& error_out,
-                                          GeminiUsageStats* usage_out) {
+                                          GeminiUsageStats* usage_out,
+                                          const GeminiHttpTimeouts* timeouts) {
     error_out.clear();
     if (api_key_utf8.empty()) {
         error_out = "API key is empty";
@@ -1512,7 +1549,7 @@ std::string GeminiGeneratePlainTextImpl(const std::string& api_key_utf8,
     std::string raw_response;
     constexpr int kMaxApiAttempts = 3;
     for (int attempt = 1; attempt <= kMaxApiAttempts; ++attempt) {
-        if (!HttpPostGemini(api_key_utf8, model, body, http_status, raw_response, error_out)) {
+        if (!HttpPostGemini(api_key_utf8, model, body, timeouts, http_status, raw_response, error_out)) {
             return {};
         }
         if (http_status == 200UL) {
@@ -1553,16 +1590,18 @@ std::string GeminiExtractPrimaryDocumentJson(const std::string& api_key_utf8,
                                              const std::string& model_id_utf8,
                                              const std::vector<char>& pdf_bytes,
                                              std::string& error_out,
-                                             GeminiUsageStats* usage_out) {
+                                             GeminiUsageStats* usage_out,
+                                             const GeminiHttpTimeouts* timeouts) {
     return GeminiExtractPrimaryDocumentJsonImpl(api_key_utf8, model_id_utf8, "application/pdf",
-                                                pdf_bytes, error_out, usage_out);
+                                                pdf_bytes, error_out, usage_out, timeouts);
 }
 
 std::string GeminiExtractPrimaryDocumentJsonFromImageBytes(const std::string& api_key_utf8,
                                                            const std::string& model_id_utf8,
                                                            const std::vector<char>& image_bytes,
                                                            std::string& error_out,
-                                                           GeminiUsageStats* usage_out) {
+                                                           GeminiUsageStats* usage_out,
+                                                           const GeminiHttpTimeouts* timeouts) {
     error_out.clear();
     if (api_key_utf8.empty()) {
         error_out = "API key is empty";
@@ -1582,16 +1621,17 @@ std::string GeminiExtractPrimaryDocumentJsonFromImageBytes(const std::string& ap
         return {};
     }
     return GeminiExtractPrimaryDocumentJsonImpl(api_key_utf8, model_id_utf8, *mime, image_bytes,
-                                                error_out, usage_out);
+                                                error_out, usage_out, timeouts);
 }
 
 std::string GeminiGeneratePlainText(const std::string& api_key_utf8,
                                     const std::string& model_id_utf8,
                                     const std::string& user_text_utf8,
                                     std::string& error_out,
-                                    GeminiUsageStats* usage_out) {
+                                    GeminiUsageStats* usage_out,
+                                    const GeminiHttpTimeouts* timeouts) {
     return GeminiGeneratePlainTextImpl(api_key_utf8, model_id_utf8, user_text_utf8, error_out,
-                                       usage_out);
+                                       usage_out, timeouts);
 }
 
 std::string GeminiSupportedModelsCatalogJson() {

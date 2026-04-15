@@ -29,7 +29,8 @@
 /// ПоследняяОшибка (англ. LastErrorCode): 0 успех; 1 пустой PDF/изображение; 4 неверный Base64;
 /// 5 неверный тип (blob); 6 неверный тип (строка); 7 пустой ключ API; 8 ошибка Gemini;
 /// 9 пустой текст запроса; 10 текст запроса слишком длинный; 99 прочее.
-/// Ключ: AIStudioApiKey / КлючAPIAIStudio; модель: GeminiModel / МодельGemini (UTF-8).
+/// Ключ: AIStudioApiKey / КлючAPIAIStudio; модель: GeminiModel / МодельGemini (UTF-8);
+/// таймауты: GeminiReceiveTimeoutMs / ТаймаутПолученияGeminiМс, GeminiTotalDeadlineMs / ОбщийДедлайнGeminiМс.
 ///
 /// Локального извлечения текста из PDF нет — только Google Gemini (в т.ч. сканы).
 /// Методы РазобратьПервичныйДокументPdf* без «ИИ» в имени — те же вызовы, что и *ИИ (совместимость со старым кодом 1С).
@@ -48,6 +49,8 @@ public:
 
     /// Без параметров: JSON с полями defaultModelId и models[{id,name,notes}] для выбора МодельGemini.
     variant_t GetSupportedGeminiModels();
+    /// Без параметров: устанавливает быстрый профиль таймаутов Gemini (получение/общий дедлайн).
+    variant_t UseFastGeminiTimeoutsProfile();
 
 protected:
     std::string extensionName() override;
@@ -57,6 +60,8 @@ private:
     std::shared_ptr<variant_t> last_error_text_storage_;
     std::shared_ptr<variant_t> ai_studio_api_key_storage_;
     std::shared_ptr<variant_t> gemini_model_storage_;
+    std::shared_ptr<variant_t> gemini_receive_timeout_ms_storage_;
+    std::shared_ptr<variant_t> gemini_total_deadline_ms_storage_;
     std::shared_ptr<variant_t> last_prompt_tokens_storage_;
     std::shared_ptr<variant_t> last_output_tokens_storage_;
     std::shared_ptr<variant_t> last_total_tokens_storage_;

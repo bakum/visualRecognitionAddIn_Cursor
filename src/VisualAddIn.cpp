@@ -135,6 +135,8 @@ constexpr int32_t kErrAiFailure = 8;
 constexpr int32_t kErrEmptyTextPrompt = 9;
 constexpr int32_t kErrTextPromptTooLarge = 10;
 constexpr int32_t kErrUnknown = 99;
+constexpr int32_t kGeminiFastProfileReceiveTimeoutMs = 20000;
+constexpr int32_t kGeminiFastProfileTotalDeadlineMs = 30000;
 
 void SetLastErrorPair(const std::shared_ptr<variant_t>& code_storage,
                       const std::shared_ptr<variant_t>& text_storage,
@@ -222,6 +224,30 @@ std::string GetTrimmedUtf8Property(const std::shared_ptr<variant_t>& storage) {
     return k;
 }
 
+int GetIntPropertyOrDefault(const std::shared_ptr<variant_t>& storage,
+                            const int default_value,
+                            const int min_value,
+                            const int max_value) {
+    if (!storage) {
+        return default_value;
+    }
+    int value = default_value;
+    if (std::holds_alternative<int32_t>(*storage)) {
+        value = static_cast<int>(std::get<int32_t>(*storage));
+    } else if (std::holds_alternative<double>(*storage)) {
+        value = static_cast<int>(std::get<double>(*storage));
+    } else {
+        return default_value;
+    }
+    if (value < min_value) {
+        return min_value;
+    }
+    if (value > max_value) {
+        return max_value;
+    }
+    return value;
+}
+
 variant_t JsonErrorObjectUtf8(const std::string& error_utf8) {
     boost::json::object o;
     o["error"] = error_utf8;
@@ -246,6 +272,8 @@ VisualAddIn::VisualAddIn()
       last_error_text_storage_(std::make_shared<variant_t>(std::string())),
       ai_studio_api_key_storage_(std::make_shared<variant_t>(std::string())),
       gemini_model_storage_(std::make_shared<variant_t>(std::string(kGeminiDefaultModelId))),
+      gemini_receive_timeout_ms_storage_(std::make_shared<variant_t>(int32_t{45000})),
+      gemini_total_deadline_ms_storage_(std::make_shared<variant_t>(int32_t{65000})),
       last_prompt_tokens_storage_(std::make_shared<variant_t>(0.0)),
       last_output_tokens_storage_(std::make_shared<variant_t>(0.0)),
       last_total_tokens_storage_(std::make_shared<variant_t>(0.0)),
@@ -277,6 +305,10 @@ VisualAddIn::VisualAddIn()
 
     AddProperty(u"AIStudioApiKey", u"КлючAPIAIStudio", ai_studio_api_key_storage_);
     AddProperty(u"GeminiModel", u"МодельGemini", gemini_model_storage_);
+    AddProperty(u"GeminiReceiveTimeoutMs", u"ТаймаутПолученияGeminiМс",
+                gemini_receive_timeout_ms_storage_);
+    AddProperty(u"GeminiTotalDeadlineMs", u"ОбщийДедлайнGeminiМс",
+                gemini_total_deadline_ms_storage_);
     AddProperty(u"LastPromptTokens", u"ПоследниеВходящиеТокены", last_prompt_tokens_storage_);
     AddProperty(u"LastOutputTokens", u"ПоследниеИсходящиеТокены", last_output_tokens_storage_);
     AddProperty(u"LastTotalTokens", u"ПоследниеВсегоТокенов", last_total_tokens_storage_);
@@ -301,12 +333,31 @@ VisualAddIn::VisualAddIn()
               {});
     AddMethod(u"GetSupportedGeminiModels", u"ПолучитьПоддерживаемыеМоделиGemini", this,
               &VisualAddIn::GetSupportedGeminiModels, {});
+    AddMethod(u"UseFastGeminiTimeoutsProfile", u"ИспользоватьБыстрыйПрофильТаймаутовGemini", this,
+              &VisualAddIn::UseFastGeminiTimeoutsProfile, {});
 }
 
 variant_t VisualAddIn::GetSupportedGeminiModels() {
     ClearLastErrorPair(last_error_code_storage_, last_error_text_storage_);
     ResetUsageStats();
     return GeminiSupportedModelsCatalogJson();
+}
+
+variant_t VisualAddIn::UseFastGeminiTimeoutsProfile() {
+    ClearLastErrorPair(last_error_code_storage_, last_error_text_storage_);
+    if (gemini_receive_timeout_ms_storage_) {
+        *gemini_receive_timeout_ms_storage_ =
+            int32_t{kGeminiFastProfileReceiveTimeoutMs};
+    }
+    if (gemini_total_deadline_ms_storage_) {
+        *gemini_total_deadline_ms_storage_ =
+            int32_t{kGeminiFastProfileTotalDeadlineMs};
+    }
+    boost::json::object out;
+    out["profile"] = "fast";
+    out["receiveTimeoutMs"] = kGeminiFastProfileReceiveTimeoutMs;
+    out["totalDeadlineMs"] = kGeminiFastProfileTotalDeadlineMs;
+    return std::string(boost::json::serialize(out));
 }
 
 void VisualAddIn::ResetUsageStats() {
@@ -363,13 +414,18 @@ variant_t VisualAddIn::ParsePrimaryDocumentGeminiFromBytes(const std::vector<cha
         return JsonErrorObjectUtf8("API key is empty");
     }
     const std::string model_id = GetTrimmedUtf8Property(gemini_model_storage_);
+    GeminiHttpTimeouts timeouts;
+    timeouts.receive_timeout_ms = GetIntPropertyOrDefault(
+        gemini_receive_timeout_ms_storage_, 45000, 1000, 300000);
+    timeouts.total_deadline_ms = GetIntPropertyOrDefault(
+        gemini_total_deadline_ms_storage_, 65000, 5000, 600000);
     std::string gemini_err;
     GeminiUsageStats usage;
     const std::string json =
         inline_as_pdf
-            ? GeminiExtractPrimaryDocumentJson(api_key, model_id, bytes, gemini_err, &usage)
+            ? GeminiExtractPrimaryDocumentJson(api_key, model_id, bytes, gemini_err, &usage, &timeouts)
             : GeminiExtractPrimaryDocumentJsonFromImageBytes(api_key, model_id, bytes, gemini_err,
-                                                             &usage);
+                                                             &usage, &timeouts);
     SetUsageStats(usage.prompt_tokens, usage.output_tokens, usage.total_tokens, usage.has_usage);
     if (!gemini_err.empty()) {
         if (gemini_err == "Invalid Gemini model id") {
@@ -432,11 +488,16 @@ variant_t VisualAddIn::GenerateGeminiText(variant_t& prompt_utf8) {
         return err;
     }
     const std::string model_id = GetTrimmedUtf8Property(gemini_model_storage_);
+    GeminiHttpTimeouts timeouts;
+    timeouts.receive_timeout_ms = GetIntPropertyOrDefault(
+        gemini_receive_timeout_ms_storage_, 45000, 1000, 300000);
+    timeouts.total_deadline_ms = GetIntPropertyOrDefault(
+        gemini_total_deadline_ms_storage_, 65000, 5000, 600000);
     std::string gemini_err;
     GeminiUsageStats usage;
     const std::string text_out =
         GeminiGeneratePlainText(api_key, model_id, std::get<std::string>(prompt_utf8), gemini_err,
-                                &usage);
+                                &usage, &timeouts);
     SetUsageStats(usage.prompt_tokens, usage.output_tokens, usage.total_tokens, usage.has_usage);
     if (!gemini_err.empty()) {
         if (gemini_err == "Invalid Gemini model id" || gemini_err == "Empty prompt text"
