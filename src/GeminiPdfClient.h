@@ -6,7 +6,7 @@
 #include <vector>
 
 /// Идентификатор модели по умолчанию (если из 1С передана пустая строка).
-inline constexpr char kGeminiDefaultModelId[] = "gemini-3.1-flash-lite-preview";
+inline constexpr char kGeminiDefaultModelId[] = "gemini-3-flash-preview";
 
 struct GeminiUsageStats {
     int64_t prompt_tokens = 0;
