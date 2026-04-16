@@ -311,7 +311,9 @@ std::string BuildRequestBody(std::string_view mime_type, const std::string& inli
         "For contract.numberAndDetails: the sign № (and prefixes like N/Nr) is not part of the value; "
         "remove it and keep only meaningful contract details/identifier text. "
         "Field documentDate: date of the current primary document itself (invoice/act/waybill date), "
-        "not the contract date; output strictly in YYYY/mm/dd format, or \"\" if absent/unclear. "
+        "not the contract date. If multiple dates are visible, choose the date tied to the main "
+        "document header/title, not contract references; output strictly in YYYY/mm/dd format, or \"\" "
+        "if absent/unclear. "
         "Field documentTitle: the visible printed document title or form name at the top (e.g. "
         "\"Счет на оплату\", \"Приходная накладная\", \"Акт выполненных работ\"); use \"\" if absent. "
         "Field documentType: infer from documentTitle (and header wording) — exactly one enum: "
@@ -871,6 +873,83 @@ std::string JsonObjectGetString(const boost::json::object& o, const char* key) {
     return std::string(it->value().as_string());
 }
 
+std::string WideToUtf8(const std::wstring& w) {
+    if (w.empty()) {
+        return {};
+    }
+#if defined(_WIN32)
+    const int n = WideCharToMultiByte(CP_UTF8, 0, w.data(), static_cast<int>(w.size()), nullptr, 0,
+                                      nullptr, nullptr);
+    if (n <= 0) {
+        return {};
+    }
+    std::string out(static_cast<size_t>(n), '\0');
+    WideCharToMultiByte(CP_UTF8, 0, w.data(), static_cast<int>(w.size()), out.data(), n, nullptr,
+                        nullptr);
+    return out;
+#else
+    static std::wstring_convert<std::codecvt_utf8_utf16<wchar_t>> cvt_utf8_utf16;
+    return cvt_utf8_utf16.to_bytes(w.data(), w.data() + w.size());
+#endif
+}
+
+std::string RemoveNonPrintableFromUtf8(std::string_view text_utf8) {
+    if (text_utf8.empty()) {
+        return {};
+    }
+    const std::wstring w = Utf8ToWide(text_utf8);
+    if (w.empty()) {
+        return std::string(text_utf8);
+    }
+    std::wstring filtered;
+    filtered.reserve(w.size());
+    for (wchar_t ch : w) {
+        const unsigned int u = static_cast<unsigned int>(ch);
+        if (u < 0x20U || u == 0x7FU) {
+            continue;
+        }
+        // Zero-width/format characters that often appear from OCR/LLM output.
+        if (u == 0x00ADU || u == 0x200BU || u == 0x200CU || u == 0x200DU || u == 0x2060U
+            || u == 0xFEFFU) {
+            continue;
+        }
+        filtered.push_back(ch);
+    }
+    std::string out = WideToUtf8(filtered);
+    TrimAsciiInPlace(out);
+    return out;
+}
+
+void SanitizeJsonStringsRecursive(boost::json::value& v, std::string_view current_key) {
+    if (v.is_object()) {
+        boost::json::object& o = v.as_object();
+        for (auto& kv : o) {
+            SanitizeJsonStringsRecursive(kv.value(), kv.key());
+        }
+        return;
+    }
+    if (v.is_array()) {
+        boost::json::array& a = v.as_array();
+        for (boost::json::value& item : a) {
+            SanitizeJsonStringsRecursive(item, current_key);
+        }
+        return;
+    }
+    if (!v.is_string()) {
+        return;
+    }
+    if (current_key == "rawText") {
+        return;
+    }
+    v = RemoveNonPrintableFromUtf8(std::string(v.as_string()));
+}
+
+void SanitizeAllTextFieldsExceptRawText(boost::json::object& root) {
+    boost::json::value v(root);
+    SanitizeJsonStringsRecursive(v, std::string_view{});
+    root = v.as_object();
+}
+
 bool WideContains(const std::wstring& w, const wchar_t* sub) {
     return w.find(sub) != std::wstring::npos;
 }
@@ -1183,38 +1262,188 @@ std::string NormalizeDocumentDateToYmdSlash(std::string_view value_utf8) {
         }
     }
 
-    std::vector<int> nums;
+    const std::wstring wc = CanonicalizeUtf8ForMatch(s);
+    const auto has_any = [&wc](std::initializer_list<const wchar_t*> terms) {
+        for (const wchar_t* term : terms) {
+            if (wc.find(term) != std::wstring::npos) {
+                return true;
+            }
+        }
+        return false;
+    };
+
+    const bool has_doc_context =
+        has_any({L"datedocument", L"документ", L"наклад", L"рахунк", L"счет", L"акт",
+                 L"invoice", L"waybill", L"bill", L"issuedate", L"issue"});
+    const bool has_contract_context =
+        has_any({L"contract", L"догов", L"договор", L"поугод"});
+
+    struct DateCandidate {
+        int year = 0;
+        int month = 0;
+        int day = 0;
+        int score = 0;
+    };
+    std::vector<DateCandidate> candidates;
+    candidates.reserve(12);
+
+    const auto month_from_word = [](const std::wstring& raw_word) -> int {
+        const std::wstring w = CanonicalizeForMatch(raw_word);
+        if (w.empty()) {
+            return 0;
+        }
+        const auto in = [&w](std::initializer_list<const wchar_t*> variants) {
+            for (const wchar_t* v : variants) {
+                if (w == v) {
+                    return true;
+                }
+            }
+            return false;
+        };
+        if (in({L"январь", L"января", L"січень", L"січня", L"january"})) return 1;
+        if (in({L"февраль", L"февраля", L"лютий", L"лютого", L"february"})) return 2;
+        if (in({L"март", L"марта", L"березень", L"березня", L"march"})) return 3;
+        if (in({L"апрель", L"апреля", L"квітень", L"квітня", L"april"})) return 4;
+        if (in({L"май", L"мая", L"травень", L"травня", L"may"})) return 5;
+        if (in({L"июнь", L"июня", L"червень", L"червня", L"june"})) return 6;
+        if (in({L"июль", L"июля", L"липень", L"липня", L"july"})) return 7;
+        if (in({L"август", L"августа", L"серпень", L"серпня", L"august"})) return 8;
+        if (in({L"сентябрь", L"сентября", L"вересень", L"вересня", L"september"})) return 9;
+        if (in({L"октябрь", L"октября", L"жовтень", L"жовтня", L"october"})) return 10;
+        if (in({L"ноябрь", L"ноября", L"листопад", L"листопада", L"november"})) return 11;
+        if (in({L"декабрь", L"декабря", L"грудень", L"грудня", L"december"})) return 12;
+        return 0;
+    };
+
+    struct MixedToken {
+        bool is_number = false;
+        int number = 0;
+        std::wstring word;
+    };
+    std::vector<MixedToken> mixed_tokens;
+    mixed_tokens.reserve(24);
+    std::wstring ws = Utf8ToWide(s);
+    for (size_t i = 0; i < ws.size();) {
+        const wchar_t ch = ws[i];
+        if (std::iswdigit(ch) != 0) {
+            int value = 0;
+            size_t j = i;
+            while (j < ws.size() && std::iswdigit(ws[j]) != 0) {
+                value = (value * 10) + static_cast<int>(ws[j] - L'0');
+                ++j;
+            }
+            mixed_tokens.push_back(MixedToken{true, value, {}});
+            i = j;
+            continue;
+        }
+        if (std::iswalpha(ch) != 0) {
+            size_t j = i;
+            while (j < ws.size() && std::iswalpha(ws[j]) != 0) {
+                ++j;
+            }
+            mixed_tokens.push_back(MixedToken{false, 0, ws.substr(i, j - i)});
+            i = j;
+            continue;
+        }
+        ++i;
+    }
+    for (size_t i = 0; i + 2U < mixed_tokens.size(); ++i) {
+        const MixedToken& t0 = mixed_tokens[i];
+        const MixedToken& t1 = mixed_tokens[i + 1U];
+        const MixedToken& t2 = mixed_tokens[i + 2U];
+        const int month = t1.is_number ? 0 : month_from_word(t1.word);
+        if (month <= 0) {
+            continue;
+        }
+
+        int year = 0;
+        int day = 0;
+        if (t0.is_number && t2.is_number) {
+            if (t0.number >= 1900 && t0.number <= 2100) {
+                year = t0.number;
+                day = t2.number;
+            } else if (t2.number >= 1900 && t2.number <= 2100) {
+                year = t2.number;
+                day = t0.number;
+            }
+        }
+        if (!IsValidYmd(year, month, day)) {
+            continue;
+        }
+
+        int score = 20 + static_cast<int>(i); // textual month is usually stronger evidence
+        if (has_doc_context) {
+            score += 4;
+        }
+        if (has_contract_context) {
+            score -= 2;
+        }
+        candidates.push_back(DateCandidate{year, month, day, score});
+    }
+
+    struct NumberToken {
+        int value = 0;
+    };
+
+    std::vector<NumberToken> nums;
     nums.reserve(8);
     int current = -1;
-    for (char ch : s) {
-        const unsigned char uc = static_cast<unsigned char>(ch);
+    for (size_t i = 0; i < s.size(); ++i) {
+        const unsigned char uc = static_cast<unsigned char>(s[i]);
         if (std::isdigit(uc) != 0) {
-            const int digit = static_cast<int>(ch - '0');
-            current = (current < 0) ? digit : (current * 10 + digit);
+            const int digit = static_cast<int>(s[i] - '0');
+            if (current < 0) {
+                current = digit;
+            } else {
+                current = (current * 10) + digit;
+            }
         } else if (current >= 0) {
-            nums.push_back(current);
+            nums.push_back(NumberToken{current});
             current = -1;
         }
     }
     if (current >= 0) {
-        nums.push_back(current);
+        nums.push_back(NumberToken{current});
     }
-    if (nums.size() < 3U) {
-        return {};
+    for (size_t i = 0; i + 2U < nums.size(); ++i) {
+        const int a = nums[i].value;
+        const int b = nums[i + 1U].value;
+        const int c = nums[i + 2U].value;
+
+        int year = 0;
+        int month = 0;
+        int day = 0;
+        if (IsValidYmd(a, b, c)) {
+            year = a;
+            month = b;
+            day = c;
+        } else if (IsValidYmd(c, b, a)) {
+            year = c;
+            month = b;
+            day = a;
+        } else {
+            continue;
+        }
+
+        int score = static_cast<int>(i);
+        if (has_doc_context) {
+            score += 4;
+        }
+        if (has_contract_context) {
+            score -= 2;
+        }
+        candidates.push_back(DateCandidate{year, month, day, score});
     }
 
-    for (size_t i = 0; i + 2U < nums.size(); ++i) {
-        const int a = nums[i];
-        const int b = nums[i + 1U];
-        const int c = nums[i + 2U];
-        if (IsValidYmd(a, b, c)) {
-            return FormatYmdSlash(a, b, c); // YYYY/MM/DD
-        }
-        if (IsValidYmd(c, b, a)) {
-            return FormatYmdSlash(c, b, a); // DD/MM/YYYY
+    int best_score = std::numeric_limits<int>::min();
+    std::string best;
+    for (const DateCandidate& c : candidates) {
+        if (c.score > best_score) {
+            best_score = c.score;
+            best = FormatYmdSlash(c.year, c.month, c.day);
         }
     }
-    return {};
+    return best;
 }
 
 void MaybeNormalizeDocumentDateField(boost::json::object& root) {
@@ -1558,6 +1787,7 @@ std::string GeminiExtractPrimaryDocumentJsonImpl(const std::string& api_key_utf8
             MaybeNormalizeContractFields(parsed.as_object());
             MaybeNormalizeLineItemsVat(parsed.as_object());
             ForceCopyPriceColumnVatTypeToLines(parsed.as_object());
+            SanitizeAllTextFieldsExceptRawText(parsed.as_object());
         }
         return boost::json::serialize(parsed);
     } catch (const std::exception& e) {
@@ -1570,6 +1800,7 @@ std::string GeminiExtractPrimaryDocumentJsonImpl(const std::string& api_key_utf8
                 MaybeNormalizeContractFields(reparsed.as_object());
                 MaybeNormalizeLineItemsVat(reparsed.as_object());
                 ForceCopyPriceColumnVatTypeToLines(reparsed.as_object());
+                SanitizeAllTextFieldsExceptRawText(reparsed.as_object());
             }
             return boost::json::serialize(reparsed);
         } catch (...) {
