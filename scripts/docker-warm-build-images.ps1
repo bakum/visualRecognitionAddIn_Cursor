@@ -47,26 +47,61 @@ function Build-WarmImage {
     $cmd = @'
 set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
-rm -rf /var/lib/apt/lists/*
-apt-get clean
-apt-get update
-apt-get install -y --fix-missing build-essential cmake ninja-build libuuid1 uuid-dev libssl-dev libboost-dev ca-certificates wget
+
+apt_retry_update() {
+  local ok=0
+  for i in 1 2 3; do
+    rm -rf /var/lib/apt/lists/*
+    apt-get clean
+
+    if apt-get update; then ok=1; break; fi
+    if [ "$i" -eq 2 ] && [ -f /etc/apt/sources.list ]; then
+      echo "[warm] Switching Ubuntu mirror to mirrors.edge.kernel.org/ubuntu"
+      for f in /etc/apt/sources.list /etc/apt/sources.list.d/*.list /etc/apt/sources.list.d/*.sources; do
+        [ -f "$f" ] || continue
+        sed -i 's|http://archive.ubuntu.com/ubuntu|http://mirrors.edge.kernel.org/ubuntu|g; s|http://security.ubuntu.com/ubuntu|http://mirrors.edge.kernel.org/ubuntu|g; s|https://archive.ubuntu.com/ubuntu|http://mirrors.edge.kernel.org/ubuntu|g; s|https://security.ubuntu.com/ubuntu|http://mirrors.edge.kernel.org/ubuntu|g' "$f" || true
+      done
+    fi
+    echo "[warm] apt-get update failed (attempt $i/3), retrying..."
+    sleep 5
+  done
+  [ "$ok" -eq 1 ] || { echo "[warm] ERROR: apt-get update failed after retries"; exit 1; }
+}
+
+apt_retry_install() {
+  local ok=0
+  for i in 1 2 3; do
+    if apt-get install -y --fix-missing build-essential cmake ninja-build libuuid1 uuid-dev libssl-dev libboost-dev ca-certificates wget; then ok=1; break; fi
+    echo "[warm] apt-get install failed (attempt $i/3), retrying..."
+    sleep 5
+  done
+  [ "$ok" -eq 1 ] || { echo "[warm] ERROR: apt-get install failed after retries"; exit 1; }
+}
+
+apt_retry_update
+apt_retry_install
+
 if [ ! -f /usr/include/boost/json.hpp ]; then
   test -f /tmp/boost_1_84_0.tar.gz || wget -O /tmp/boost_1_84_0.tar.gz https://archives.boost.io/release/1.84.0/source/boost_1_84_0.tar.gz
   mkdir -p /opt
   rm -rf /opt/boost_1_84_0
   tar -xzf /tmp/boost_1_84_0.tar.gz -C /opt
 fi
+
 cmake --version
 (ninja --version || ninja-build --version)
 '@
 
     $cmdBase64 = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($cmd))
 
-    & docker rm -f visualaddin-warm-tmp 2>$null | Out-Null
+    try {
+        & docker rm -f visualaddin-warm-tmp *> $null
+    } catch {
+        # ignore: container may not exist yet
+    }
     & docker run --name visualaddin-warm-tmp `
         $BaseImage `
-        bash -lc "echo '$cmdBase64' | base64 -d | bash"
+        bash -lc "echo '$cmdBase64' | base64 -d | tr -d '\r' | bash"
     if ($LASTEXITCODE -ne 0) {
         & docker rm -f visualaddin-warm-tmp | Out-Null
         throw "[warm] Failed while preparing commit container for $ArchLabel."
