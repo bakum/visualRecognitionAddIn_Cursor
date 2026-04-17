@@ -161,6 +161,9 @@ boost::json::object BuildInvoiceResponseSchema() {
         props["priceVatType"] = boost::json::object({{"type", "string"}});
         props["vatRate"] = boost::json::object({{"type", "string"}});
         props["amount"] = boost::json::object({{"type", "string"}});
+        props["search_keyword"] =
+            boost::json::object({{"type", "array"},
+                                 {"items", boost::json::object({{"type", "string"}})}});
         line_item["properties"] = props;
     }
 
@@ -319,7 +322,11 @@ std::string BuildRequestBody(std::string_view mime_type, const std::string& inli
         "\"Ціна без ПДВ\", \"Цена без НДС\"); set \"с НДС\" if price with VAT (e.g. \"Ціна з ПДВ\", "
         "\"Цена с НДС\"); else \"\". For "
         "lineItems, include every product/service row with name, sku, barcode, quantity, unit, price, "
-        "priceVatType, vatRate, amount when visible. Field sku is the article / vendor code / SKU only "
+        "priceVatType, vatRate, amount, search_keyword when visible. Field search_keyword must be an "
+        "array of strings for full-text matching in ERP/1C and must be generated from field name only "
+        "(do not use sku, barcode, quantity, unit, price, or other fields as keyword sources): include "
+        "normalized meaningful words/tokens from name, without duplicates. If name is empty/unknown, "
+        "return an empty array []. Field sku is the article / vendor code / SKU only "
         "when this value is explicitly shown by labels/columns like Артикул, Артикул постачальника, "
         "Код товару, SKU, Article, Part number, Cat. no., etc.; if article/code is absent, ambiguous, or "
         "looks inferred from another field (including barcode), return \"\". Field "
