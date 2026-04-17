@@ -118,6 +118,35 @@ bool IsValidGeminiModelId(std::string_view s) {
     return true;
 }
 
+std::string BuildGeminiModelAliasKey(std::string_view value) {
+    std::string key;
+    key.reserve(value.size());
+    for (unsigned char uc : value) {
+        if (std::isalnum(uc) == 0) {
+            continue;
+        }
+        key.push_back(static_cast<char>(std::tolower(uc)));
+    }
+    return key;
+}
+
+std::string ResolveGeminiModelAlias(std::string_view model_id_utf8) {
+    std::string model(model_id_utf8);
+    TrimAsciiInPlace(model);
+    if (model.empty()) {
+        return std::string(kGeminiDefaultModelId);
+    }
+
+    const std::string key = BuildGeminiModelAliasKey(model);
+    if (key == "gemini3pro" || key == "gemini31pro") {
+        return "gemini-3.1-pro-preview";
+    }
+    if (key == "gemini3flashlite" || key == "gemini31flashlite") {
+        return "gemini-3.1-flash-lite-preview";
+    }
+    return model;
+}
+
 boost::json::object BuildInvoiceResponseSchema() {
     boost::json::object line_item;
     line_item["type"] = "object";
@@ -290,9 +319,10 @@ std::string BuildRequestBody(std::string_view mime_type, const std::string& inli
         "\"Ціна без ПДВ\", \"Цена без НДС\"); set \"с НДС\" if price with VAT (e.g. \"Ціна з ПДВ\", "
         "\"Цена с НДС\"); else \"\". For "
         "lineItems, include every product/service row with name, sku, barcode, quantity, unit, price, "
-        "priceVatType, vatRate, amount when visible. Field sku is the article / vendor code / SKU when the "
-        "document shows it (labels like Артикул, Артикул постачальника, Код товару, SKU, Article, "
-        "Part number, Cat. no., etc.); use \"\" if no separate article column or value exists. Field "
+        "priceVatType, vatRate, amount when visible. Field sku is the article / vendor code / SKU only "
+        "when this value is explicitly shown by labels/columns like Артикул, Артикул постачальника, "
+        "Код товару, SKU, Article, Part number, Cat. no., etc.; if article/code is absent, ambiguous, or "
+        "looks inferred from another field (including barcode), return \"\". Field "
         "barcode is a product barcode value from labels like Штрихкод, Barcode, EAN, GTIN, UPC "
         "(digits only, keep leading zeros), otherwise \"\". Field priceVatType is \"с НДС\" when the "
         "line price explicitly includes VAT, \"без НДС\" when the line price explicitly excludes VAT; "
@@ -1606,6 +1636,116 @@ std::string InferGlobalPriceVatTypeFromRoot(const boost::json::object& root) {
     return {};
 }
 
+bool IsValidGtinWithCheckDigit(std::string_view digits) {
+    if (digits.size() != 8U && digits.size() != 12U && digits.size() != 13U && digits.size() != 14U) {
+        return false;
+    }
+    if (!std::all_of(digits.begin(), digits.end(),
+                     [](unsigned char ch) { return std::isdigit(ch) != 0; })) {
+        return false;
+    }
+    int sum = 0;
+    bool mul3 = true;
+    for (size_t i = digits.size() - 1U; i > 0U; --i) {
+        const int d = static_cast<int>(digits[i - 1U] - '0');
+        sum += mul3 ? (d * 3) : d;
+        mul3 = !mul3;
+    }
+    const int expected_check = (10 - (sum % 10)) % 10;
+    const int actual_check = static_cast<int>(digits.back() - '0');
+    return expected_check == actual_check;
+}
+
+std::string NormalizeAndValidateSku(std::string_view sku_utf8, std::string_view barcode_utf8) {
+    std::string sku(sku_utf8);
+    TrimAsciiInPlace(sku);
+    if (sku.empty()) {
+        return {};
+    }
+
+    std::string sku_digits;
+    sku_digits.reserve(sku.size());
+    for (char ch : sku) {
+        const unsigned char uc = static_cast<unsigned char>(ch);
+        if (std::isdigit(uc) != 0) {
+            sku_digits.push_back(ch);
+        }
+    }
+    std::string barcode_digits;
+    barcode_digits.reserve(barcode_utf8.size());
+    for (char ch : barcode_utf8) {
+        const unsigned char uc = static_cast<unsigned char>(ch);
+        if (std::isdigit(uc) != 0) {
+            barcode_digits.push_back(ch);
+        }
+    }
+    if (!sku_digits.empty() && !barcode_digits.empty() && sku_digits == barcode_digits) {
+        // SKU и штрихкод не должны дублировать один и тот же идентификатор.
+        return {};
+    }
+    return sku;
+}
+
+std::string NormalizeAndValidateBarcode(std::string_view barcode_utf8) {
+    std::string raw(barcode_utf8);
+    TrimAsciiInPlace(raw);
+    if (raw.empty()) {
+        return {};
+    }
+
+    std::string digits;
+    digits.reserve(raw.size());
+    for (char ch : raw) {
+        const unsigned char uc = static_cast<unsigned char>(ch);
+        if (std::isdigit(uc) != 0) {
+            digits.push_back(ch);
+        }
+    }
+    if (digits.empty() || !IsValidGtinWithCheckDigit(digits)) {
+        return {};
+    }
+    return digits;
+}
+
+void MaybeNormalizeLineItemsSku(boost::json::object& root) {
+    auto it = root.find("lineItems");
+    if (it == root.end() || !it->value().is_array()) {
+        return;
+    }
+    boost::json::array& items = it->value().as_array();
+    for (boost::json::value& item_v : items) {
+        if (!item_v.is_object()) {
+            continue;
+        }
+        boost::json::object& item = item_v.as_object();
+        const std::string sku_raw = JsonObjectGetString(item, "sku");
+        const std::string barcode_raw = JsonObjectGetString(item, "barcode");
+        if (sku_raw.empty()) {
+            continue;
+        }
+        item["sku"] = NormalizeAndValidateSku(sku_raw, barcode_raw);
+    }
+}
+
+void MaybeNormalizeLineItemsBarcode(boost::json::object& root) {
+    auto it = root.find("lineItems");
+    if (it == root.end() || !it->value().is_array()) {
+        return;
+    }
+    boost::json::array& items = it->value().as_array();
+    for (boost::json::value& item_v : items) {
+        if (!item_v.is_object()) {
+            continue;
+        }
+        boost::json::object& item = item_v.as_object();
+        const std::string barcode_raw = JsonObjectGetString(item, "barcode");
+        if (barcode_raw.empty()) {
+            continue;
+        }
+        item["barcode"] = NormalizeAndValidateBarcode(barcode_raw);
+    }
+}
+
 void MaybeNormalizeLineItemsVat(boost::json::object& root) {
     auto it = root.find("lineItems");
     if (it == root.end() || !it->value().is_array()) {
@@ -1717,11 +1857,7 @@ std::string GeminiExtractPrimaryDocumentJsonImpl(const std::string& api_key_utf8
         return {};
     }
 
-    std::string model = model_id_utf8;
-    TrimAsciiInPlace(model);
-    if (model.empty()) {
-        model = kGeminiDefaultModelId;
-    }
+    std::string model = ResolveGeminiModelAlias(model_id_utf8);
     if (!IsValidGeminiModelId(model)) {
         error_out = "Invalid Gemini model id";
         return {};
@@ -1785,6 +1921,8 @@ std::string GeminiExtractPrimaryDocumentJsonImpl(const std::string& api_key_utf8
             MaybeEnrichDocumentType(parsed.as_object());
             MaybeNormalizeDocumentDateField(parsed.as_object());
             MaybeNormalizeContractFields(parsed.as_object());
+            MaybeNormalizeLineItemsSku(parsed.as_object());
+            MaybeNormalizeLineItemsBarcode(parsed.as_object());
             MaybeNormalizeLineItemsVat(parsed.as_object());
             ForceCopyPriceColumnVatTypeToLines(parsed.as_object());
             SanitizeAllTextFieldsExceptRawText(parsed.as_object());
@@ -1798,6 +1936,8 @@ std::string GeminiExtractPrimaryDocumentJsonImpl(const std::string& api_key_utf8
                 MaybeEnrichDocumentType(reparsed.as_object());
                 MaybeNormalizeDocumentDateField(reparsed.as_object());
                 MaybeNormalizeContractFields(reparsed.as_object());
+                MaybeNormalizeLineItemsSku(reparsed.as_object());
+                MaybeNormalizeLineItemsBarcode(reparsed.as_object());
                 MaybeNormalizeLineItemsVat(reparsed.as_object());
                 ForceCopyPriceColumnVatTypeToLines(reparsed.as_object());
                 SanitizeAllTextFieldsExceptRawText(reparsed.as_object());
@@ -1836,11 +1976,7 @@ std::string GeminiGeneratePlainTextImpl(const std::string& api_key_utf8,
         return {};
     }
 
-    std::string model = model_id_utf8;
-    TrimAsciiInPlace(model);
-    if (model.empty()) {
-        model = kGeminiDefaultModelId;
-    }
+    std::string model = ResolveGeminiModelAlias(model_id_utf8);
     if (!IsValidGeminiModelId(model)) {
         error_out = "Invalid Gemini model id";
         return {};
@@ -1960,6 +2096,10 @@ std::string GeminiSupportedModelsCatalogJson() {
         u8"Линейка выше 2.5; превью, доступность и квоты — в AI Studio.");
     add("gemini-3.1-flash-lite-preview", "Gemini 3.1 Flash-Lite",
         u8"Облегчённая 3.1; превью.");
+    add("gemini-3-pro", "Gemini 3 Pro (alias)",
+        u8"Алиас в аддине: автоматически мапится на gemini-3.1-pro-preview.");
+    add("gemini-3-flash-lite", "Gemini 3 Flash-Lite (alias)",
+        u8"Алиас в аддине: автоматически мапится на gemini-3.1-flash-lite-preview.");
     add("gemini-3-flash-preview", "Gemini 3 Flash",
         u8"Основной Flash линейки 3 в API (имени gemini-3.0-flash нет). Не путать с несуществующим gemini-3.1-flash без суффикса.");
     add("gemini-2.5-pro", "Gemini 2.5 Pro", u8"Выше качество, ниже скорость; PDF и изображения.");
@@ -1976,6 +2116,9 @@ std::string GeminiSupportedModelsCatalogJson() {
         u8"Для картинок в документации также фигурирует gemini-3.1-flash-image-preview.");
     root["propertyHint"] =
         std::string(u8"В свойство МодельGemini (GeminiModel) подставляйте значение поля id из массива models.");
+    root["aliasesHint"] = std::string(
+        u8"Также поддерживаются пользовательские алиасы gemini-3-pro и gemini-3-flash-lite "
+        u8"(включая варианты с пробелами): они автоматически приводятся к актуальным 3.1 preview ID.");
     root["disclaimer"] = std::string(
         u8"Модели линейки Gemini 1.x и ниже 2.0 в список не включены (для generateContent не рекомендуются). "
         u8"Идентификаторы с суффиксом preview могут меняться. "
