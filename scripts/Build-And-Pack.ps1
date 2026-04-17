@@ -6,7 +6,7 @@
 .DESCRIPTION
   1) cmake --preset win32-release + сборка Release  
   2) cmake --preset x64-release + сборка Release  
-  3) ZIP: MANIFEST.xml + Windows DLL; Linux .so добавляются автоматически, если найдены.
+  3) ZIP: MANIFEST.xml + Windows DLL; Linux .so добавляются автоматически, если найдены (можно отключить).
 
   Требуется: CMake в PATH, Visual Studio 2022 (CMakePresets.json).
 
@@ -16,11 +16,14 @@
   .\Build-And-Pack.ps1 -OutDir D:\artifacts
 .EXAMPLE
   .\Build-And-Pack.ps1 -NoFresh
+.EXAMPLE
+  .\Build-And-Pack.ps1 -DisableLinuxInDist
 #>
 [CmdletBinding()]
 param(
     [string] $OutDir,
     [switch] $NoFresh,
+    [switch] $DisableLinuxInDist,
     [string] $LinuxLin64So,
     [string] $LinuxLin32So
 )
@@ -192,7 +195,11 @@ if ($LinuxLin64So -and -not (Test-Path -LiteralPath $LinuxLin64So)) {
 if ($LinuxLin32So -and -not (Test-Path -LiteralPath $LinuxLin32So)) {
     throw "-LinuxLin32So не найден: $LinuxLin32So"
 }
-if (-not $haveLin64 -and -not $haveLin32) {
+if ($DisableLinuxInDist) {
+    $haveLin64 = $false
+    $haveLin32 = $false
+    Write-Host "Linux-компоненты отключены параметром -DisableLinuxInDist."
+} elseif (-not $haveLin64 -and -not $haveLin32) {
     Write-Warning "Linux .so не найдены; в MANIFEST внутри zip останутся только Windows-компоненты."
 }
 
