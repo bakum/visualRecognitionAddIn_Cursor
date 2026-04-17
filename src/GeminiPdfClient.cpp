@@ -173,6 +173,12 @@ boost::json::object BuildInvoiceResponseSchema() {
         boost::json::object props;
         props["supplier"] = boost::json::object({{"type", "string"}});
         props["buyer"] = boost::json::object({{"type", "string"}});
+        props["supplier_search_keyword"] =
+            boost::json::object({{"type", "array"},
+                                 {"items", boost::json::object({{"type", "string"}})}});
+        props["buyer_search_keyword"] =
+            boost::json::object({{"type", "array"},
+                                 {"items", boost::json::object({{"type", "string"}})}});
         props["supplierInn"] = boost::json::object({{"type", "string"}});
         props["buyerInn"] = boost::json::object({{"type", "string"}});
         props["supplierKpp"] = boost::json::object({{"type", "string"}});
@@ -337,7 +343,9 @@ std::string BuildRequestBody(std::string_view mime_type, const std::string& inli
         "priceColumnVatType into each line. Field vatRate is the explicit VAT "
         "rate for that line (examples: \"20%\", \"7%\", \"0%\", \"без НДС\"); if no clear per-line rate is "
         "shown, use \"\". Omit other fields only if absent. "
-        "In counterparty: supplierInn is the tax id of the "
+        "In counterparty: add supplier_search_keyword and buyer_search_keyword as arrays of keywords "
+        "generated from supplier and buyer names respectively; preferably include just the company name "
+        "as a single keyword, without duplicates. If name is empty/unknown, return []. supplierInn is the tax id of the "
         "supplier/seller/issuer (e.g. ЄДРПОУ, ДРФО, ИНН next to Постачальник/Продавець/Виконавець); "
         "buyerInn is the buyer's tax id when shown (Покупець/Замовник). supplierKpp and buyerKpp are "
         "Russian КПП when present; otherwise \"\". supplierOkpo and buyerOkpo: in Russian "
