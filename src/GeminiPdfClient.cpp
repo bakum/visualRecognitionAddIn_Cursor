@@ -965,6 +965,50 @@ std::string RemoveNonPrintableFromUtf8(std::string_view text_utf8) {
     return out;
 }
 
+std::string NormalizeLineItemNameText(std::string_view name_utf8) {
+    const std::string cleaned = RemoveNonPrintableFromUtf8(name_utf8);
+    if (cleaned.empty()) {
+        return {};
+    }
+    const std::wstring w = Utf8ToWide(cleaned);
+    if (w.empty()) {
+        std::string fallback;
+        fallback.reserve(cleaned.size());
+        bool pending_space = false;
+        for (unsigned char ch : cleaned) {
+            if (std::isspace(ch) != 0) {
+                pending_space = !fallback.empty();
+                continue;
+            }
+            if (pending_space && !fallback.empty()) {
+                fallback.push_back(' ');
+            }
+            fallback.push_back(static_cast<char>(ch));
+            pending_space = false;
+        }
+        TrimAsciiInPlace(fallback);
+        return fallback;
+    }
+
+    std::wstring out;
+    out.reserve(w.size());
+    bool pending_space = false;
+    for (wchar_t ch : w) {
+        const unsigned int u = static_cast<unsigned int>(ch);
+        const bool is_space = (std::iswspace(ch) != 0) || u == 0x00A0U;
+        if (is_space) {
+            pending_space = !out.empty();
+            continue;
+        }
+        if (pending_space && !out.empty()) {
+            out.push_back(L' ');
+        }
+        out.push_back(ch);
+        pending_space = false;
+    }
+    return WideToUtf8(out);
+}
+
 void SanitizeJsonStringsRecursive(boost::json::value& v, std::string_view current_key) {
     if (v.is_object()) {
         boost::json::object& o = v.as_object();
@@ -1825,6 +1869,41 @@ void MaybeNormalizeLineItemsVat(boost::json::object& root) {
     }
 }
 
+void MaybeNormalizeLineItemsName(boost::json::object& root) {
+    auto it = root.find("lineItems");
+    if (it == root.end() || !it->value().is_array()) {
+        return;
+    }
+    boost::json::array& items = it->value().as_array();
+    for (boost::json::value& item_v : items) {
+        if (!item_v.is_object()) {
+            continue;
+        }
+        boost::json::object& item = item_v.as_object();
+        const std::string raw_name = JsonObjectGetString(item, "name");
+        if (raw_name.empty()) {
+            continue;
+        }
+        item["name"] = NormalizeLineItemNameText(raw_name);
+    }
+}
+
+void MaybeNormalizeCounterpartyNames(boost::json::object& root) {
+    auto it = root.find("counterparty");
+    if (it == root.end() || !it->value().is_object()) {
+        return;
+    }
+    boost::json::object& counterparty = it->value().as_object();
+    const std::string supplier_raw = JsonObjectGetString(counterparty, "supplier");
+    if (!supplier_raw.empty()) {
+        counterparty["supplier"] = NormalizeLineItemNameText(supplier_raw);
+    }
+    const std::string buyer_raw = JsonObjectGetString(counterparty, "buyer");
+    if (!buyer_raw.empty()) {
+        counterparty["buyer"] = NormalizeLineItemNameText(buyer_raw);
+    }
+}
+
 void ForceCopyPriceColumnVatTypeToLines(boost::json::object& root) {
     const std::string raw_column_vat_type = JsonObjectGetString(root, "priceColumnVatType");
     std::string trimmed = raw_column_vat_type;
@@ -1939,6 +2018,8 @@ std::string GeminiExtractPrimaryDocumentJsonImpl(const std::string& api_key_utf8
             MaybeNormalizeLineItemsSku(parsed.as_object());
             MaybeNormalizeLineItemsBarcode(parsed.as_object());
             MaybeNormalizeLineItemsVat(parsed.as_object());
+            MaybeNormalizeLineItemsName(parsed.as_object());
+            MaybeNormalizeCounterpartyNames(parsed.as_object());
             ForceCopyPriceColumnVatTypeToLines(parsed.as_object());
             SanitizeAllTextFieldsExceptRawText(parsed.as_object());
         }
@@ -1954,6 +2035,8 @@ std::string GeminiExtractPrimaryDocumentJsonImpl(const std::string& api_key_utf8
                 MaybeNormalizeLineItemsSku(reparsed.as_object());
                 MaybeNormalizeLineItemsBarcode(reparsed.as_object());
                 MaybeNormalizeLineItemsVat(reparsed.as_object());
+                MaybeNormalizeLineItemsName(reparsed.as_object());
+                MaybeNormalizeCounterpartyNames(reparsed.as_object());
                 ForceCopyPriceColumnVatTypeToLines(reparsed.as_object());
                 SanitizeAllTextFieldsExceptRawText(reparsed.as_object());
             }

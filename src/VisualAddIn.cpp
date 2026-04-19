@@ -108,6 +108,26 @@ std::optional<std::vector<char>> DecodeBase64(std::string_view in) {
     return out;
 }
 
+std::string EncodeBase64(const std::vector<char>& in) {
+    static const char tbl[] =
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    std::string out;
+    const auto* bytes = reinterpret_cast<const unsigned char*>(in.data());
+    const size_t n = in.size();
+    out.reserve(((n + 2U) / 3U) * 4U);
+    for (size_t i = 0; i < n; i += 3U) {
+        const unsigned b0 = bytes[i];
+        const unsigned b1 = i + 1U < n ? bytes[i + 1U] : 0U;
+        const unsigned b2 = i + 2U < n ? bytes[i + 2U] : 0U;
+        const unsigned triple = (b0 << 16U) | (b1 << 8U) | b2;
+        out += tbl[(triple >> 18U) & 63U];
+        out += tbl[(triple >> 12U) & 63U];
+        out += (i + 1U < n) ? tbl[(triple >> 6U) & 63U] : '=';
+        out += (i + 2U < n) ? tbl[triple & 63U] : '=';
+    }
+    return out;
+}
+
 std::optional<std::string> ExtractErrorFromResultJson(const std::string& json_utf8) {
     try {
         const boost::json::value v = boost::json::parse(json_utf8);
@@ -329,6 +349,9 @@ VisualAddIn::VisualAddIn()
     // Два варіанти PDF викликають той самий Gemini-шлях (старий код 1С без «ИИ» у імені).
     AddMethod(u"ParsePrimaryDocumentPdf", u"РазобратьПервичныйДокументPdf", this,
               &VisualAddIn::ParsePrimaryDocumentPdfAi, {});
+    AddMethod(u"EncodeToBase64", u"КодироватьВBase64", this, &VisualAddIn::EncodeToBase64, {});
+    AddMethod(u"DecodeFromBase64", u"ДекодироватьИзBase64", this, &VisualAddIn::DecodeFromBase64,
+              {});
     AddMethod(u"ParsePrimaryDocumentPdfBase64", u"РазобратьПервичныйДокументPdfBase64", this,
               &VisualAddIn::ParsePrimaryDocumentPdfAiBase64, {});
     AddMethod(u"ParsePrimaryDocumentPdfGemini", u"РазобратьПервичныйДокументPdfИИ", this,
@@ -489,6 +512,34 @@ variant_t VisualAddIn::ParsePrimaryDocumentImageAi(variant_t& image_blob) {
     variant_t r = ParsePrimaryDocumentGeminiFromBytes(std::get<std::vector<char>>(image_blob), false);
     SyncLastErrorFromParseResult(last_error_code_storage_, last_error_text_storage_, r);
     return r;
+}
+
+variant_t VisualAddIn::EncodeToBase64(variant_t& bytes_blob) {
+    ClearLastErrorPair(last_error_code_storage_, last_error_text_storage_);
+    if (!std::holds_alternative<std::vector<char>>(bytes_blob)) {
+        SetLastErrorPair(last_error_code_storage_, last_error_text_storage_, kErrWrongTypeBlob,
+                         std::string(u8"Ожидались двоичные данные (VTYPE_BLOB)."));
+        throw std::runtime_error("Expected binary data (VTYPE_BLOB)");
+    }
+    return EncodeBase64(std::get<std::vector<char>>(bytes_blob));
+}
+
+variant_t VisualAddIn::DecodeFromBase64(variant_t& base64_text) {
+    ClearLastErrorPair(last_error_code_storage_, last_error_text_storage_);
+    if (!std::holds_alternative<std::string>(base64_text)) {
+        SetLastErrorPair(last_error_code_storage_, last_error_text_storage_, kErrWrongTypeBase64,
+                         std::string(u8"Ожидалась строка Base64 (VTYPE_PWSTR / UTF-8)."));
+        throw std::runtime_error("Expected Base64 string (VTYPE_PWSTR / UTF-8 string)");
+    }
+    const std::optional<std::vector<char>> decoded = DecodeBase64(std::get<std::string>(base64_text));
+    if (!decoded.has_value()) {
+        SetLastErrorPair(last_error_code_storage_, last_error_text_storage_, kErrInvalidBase64,
+                         std::string(u8"Некорректная строка Base64."));
+        variant_t err = JsonErrorObjectUtf8("Invalid Base64 string");
+        SyncLastErrorFromParseResult(last_error_code_storage_, last_error_text_storage_, err);
+        return err;
+    }
+    return *decoded;
 }
 
 variant_t VisualAddIn::GenerateGeminiText(variant_t& prompt_utf8) {

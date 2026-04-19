@@ -38,6 +38,9 @@ class VisualAddIn : public Component {
 public:
     VisualAddIn();
 
+    variant_t EncodeToBase64(variant_t& bytes_blob);
+    variant_t DecodeFromBase64(variant_t& base64_text);
+
     variant_t ParsePrimaryDocumentPdfAi(variant_t& pdf_blob);
     variant_t ParsePrimaryDocumentPdfAiBase64(variant_t& pdf_base64);
 
