@@ -42,6 +42,8 @@ public:
     variant_t DecodeFromBase64(variant_t& base64_text);
     variant_t EncryptTextSimple(variant_t& plain_text);
     variant_t DecryptTextSimple(variant_t& encrypted_text);
+    variant_t EncodeKey(variant_t& plain_text);
+    variant_t DecodeKey(variant_t& encoded_key);
 
     variant_t ParsePrimaryDocumentPdfAi(variant_t& pdf_blob);
     variant_t ParsePrimaryDocumentPdfAiBase64(variant_t& pdf_base64);

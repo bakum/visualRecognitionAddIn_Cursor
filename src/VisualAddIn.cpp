@@ -415,6 +415,8 @@ VisualAddIn::VisualAddIn()
               {});
     AddMethod(u"DecryptTextSimple", u"РасшифроватьТекстПросто", this,
               &VisualAddIn::DecryptTextSimple, {});
+    AddMethod(u"EncodeKey", u"КодироватьКлюч", this, &VisualAddIn::EncodeKey, {});
+    AddMethod(u"DecodeKey", u"ДекодироватьКлюч", this, &VisualAddIn::DecodeKey, {});
     AddMethod(u"ParsePrimaryDocumentPdfBase64", u"РазобратьПервичныйДокументPdfBase64", this,
               &VisualAddIn::ParsePrimaryDocumentPdfAiBase64, {});
     AddMethod(u"ParsePrimaryDocumentPdfGemini", u"РазобратьПервичныйДокументPdfИИ", this,
@@ -630,6 +632,45 @@ variant_t VisualAddIn::DecryptTextSimple(variant_t& encrypted_text) {
         return JsonErrorObjectUtf8("Invalid encrypted text format");
     }
     return *decrypted;
+}
+
+variant_t VisualAddIn::EncodeKey(variant_t& plain_text) {
+    ClearLastErrorPair(last_error_code_storage_, last_error_text_storage_);
+    if (!std::holds_alternative<std::string>(plain_text)) {
+        SetLastErrorPair(last_error_code_storage_, last_error_text_storage_, kErrWrongTypeText,
+                         std::string(u8"Ожидалась строка UTF-8 (VTYPE_PWSTR)."));
+        throw std::runtime_error("Expected key as UTF-8 string (VTYPE_PWSTR)");
+    }
+
+    const std::string& input_text = std::get<std::string>(plain_text);
+    variant_t bytes_blob = std::vector<char>(input_text.begin(), input_text.end());
+    variant_t base64_text = EncodeToBase64(bytes_blob);
+    return EncryptTextSimple(base64_text);
+}
+
+variant_t VisualAddIn::DecodeKey(variant_t& encoded_key) {
+    ClearLastErrorPair(last_error_code_storage_, last_error_text_storage_);
+    if (!std::holds_alternative<std::string>(encoded_key)) {
+        SetLastErrorPair(last_error_code_storage_, last_error_text_storage_, kErrWrongTypeText,
+                         std::string(u8"Ожидалась шифрованная строка UTF-8 (VTYPE_PWSTR)."));
+        throw std::runtime_error("Expected encoded key as UTF-8 string (VTYPE_PWSTR)");
+    }
+
+    variant_t encrypted_text = std::get<std::string>(encoded_key);
+    variant_t base64_text = DecryptTextSimple(encrypted_text);
+    if (!std::holds_alternative<std::string>(base64_text)) {
+        return base64_text;
+    }
+
+    variant_t decoded_blob = DecodeFromBase64(base64_text);
+    if (!std::holds_alternative<std::vector<char>>(decoded_blob)) {
+        SetLastErrorPair(last_error_code_storage_, last_error_text_storage_, kErrInvalidEncryptedText,
+                         std::string(u8"Не удалось декодировать Base64 после расшифровки ключа."));
+        return JsonErrorObjectUtf8("Failed to decode Base64 from decrypted key");
+    }
+
+    const std::vector<char>& bytes = std::get<std::vector<char>>(decoded_blob);
+    return std::string(bytes.begin(), bytes.end());
 }
 
 variant_t VisualAddIn::GenerateGeminiText(variant_t& prompt_utf8) {
