@@ -128,6 +128,63 @@ std::string EncodeBase64(const std::vector<char>& in) {
     return out;
 }
 
+constexpr char kSimpleCipherKey[] = "VisualRecognitionAddInSimpleKey";
+
+char NibbleToHex(const unsigned value) {
+    return static_cast<char>(value < 10U ? ('0' + value) : ('A' + (value - 10U)));
+}
+
+int HexToNibble(const char ch) {
+    if (ch >= '0' && ch <= '9') {
+        return ch - '0';
+    }
+    if (ch >= 'A' && ch <= 'F') {
+        return ch - 'A' + 10;
+    }
+    if (ch >= 'a' && ch <= 'f') {
+        return ch - 'a' + 10;
+    }
+    return -1;
+}
+
+unsigned char SimpleCipherByte(const unsigned char src, const size_t index) {
+    const unsigned char key_byte =
+        static_cast<unsigned char>(kSimpleCipherKey[index % (sizeof(kSimpleCipherKey) - 1U)]);
+    const unsigned char salt = static_cast<unsigned char>((index * 31U) & 0xFFU);
+    return static_cast<unsigned char>(src ^ key_byte ^ salt);
+}
+
+std::string EncryptUtf8ToHex(std::string_view plain_utf8) {
+    std::string out;
+    out.reserve(plain_utf8.size() * 2U);
+    for (size_t i = 0; i < plain_utf8.size(); ++i) {
+        const unsigned char encrypted =
+            SimpleCipherByte(static_cast<unsigned char>(plain_utf8[i]), i);
+        out.push_back(NibbleToHex((encrypted >> 4U) & 0xFU));
+        out.push_back(NibbleToHex(encrypted & 0xFU));
+    }
+    return out;
+}
+
+std::optional<std::string> DecryptHexToUtf8(std::string_view encrypted_hex) {
+    if ((encrypted_hex.size() % 2U) != 0U) {
+        return std::nullopt;
+    }
+    std::string out;
+    out.reserve(encrypted_hex.size() / 2U);
+    for (size_t i = 0; i < encrypted_hex.size(); i += 2U) {
+        const int hi = HexToNibble(encrypted_hex[i]);
+        const int lo = HexToNibble(encrypted_hex[i + 1U]);
+        if (hi < 0 || lo < 0) {
+            return std::nullopt;
+        }
+        const unsigned char encrypted =
+            static_cast<unsigned char>((static_cast<unsigned>(hi) << 4U) | static_cast<unsigned>(lo));
+        out.push_back(static_cast<char>(SimpleCipherByte(encrypted, i / 2U)));
+    }
+    return out;
+}
+
 std::optional<std::string> ExtractErrorFromResultJson(const std::string& json_utf8) {
     try {
         const boost::json::value v = boost::json::parse(json_utf8);
@@ -154,6 +211,8 @@ constexpr int32_t kErrMissingApiKey = 7;
 constexpr int32_t kErrAiFailure = 8;
 constexpr int32_t kErrEmptyTextPrompt = 9;
 constexpr int32_t kErrTextPromptTooLarge = 10;
+constexpr int32_t kErrWrongTypeText = 11;
+constexpr int32_t kErrInvalidEncryptedText = 12;
 constexpr int32_t kErrUnknown = 99;
 constexpr int32_t kGeminiFastProfileReceiveTimeoutMs = 20000;
 constexpr int32_t kGeminiFastProfileTotalDeadlineMs = 30000;
@@ -352,6 +411,10 @@ VisualAddIn::VisualAddIn()
     AddMethod(u"EncodeToBase64", u"КодироватьВBase64", this, &VisualAddIn::EncodeToBase64, {});
     AddMethod(u"DecodeFromBase64", u"ДекодироватьИзBase64", this, &VisualAddIn::DecodeFromBase64,
               {});
+    AddMethod(u"EncryptTextSimple", u"ШифроватьТекстПросто", this, &VisualAddIn::EncryptTextSimple,
+              {});
+    AddMethod(u"DecryptTextSimple", u"РасшифроватьТекстПросто", this,
+              &VisualAddIn::DecryptTextSimple, {});
     AddMethod(u"ParsePrimaryDocumentPdfBase64", u"РазобратьПервичныйДокументPdfBase64", this,
               &VisualAddIn::ParsePrimaryDocumentPdfAiBase64, {});
     AddMethod(u"ParsePrimaryDocumentPdfGemini", u"РазобратьПервичныйДокументPdfИИ", this,
@@ -540,6 +603,33 @@ variant_t VisualAddIn::DecodeFromBase64(variant_t& base64_text) {
         return err;
     }
     return *decoded;
+}
+
+variant_t VisualAddIn::EncryptTextSimple(variant_t& plain_text) {
+    ClearLastErrorPair(last_error_code_storage_, last_error_text_storage_);
+    if (!std::holds_alternative<std::string>(plain_text)) {
+        SetLastErrorPair(last_error_code_storage_, last_error_text_storage_, kErrWrongTypeText,
+                         std::string(u8"Ожидалась строка UTF-8 (VTYPE_PWSTR)."));
+        throw std::runtime_error("Expected text as UTF-8 string (VTYPE_PWSTR)");
+    }
+    return EncryptUtf8ToHex(std::get<std::string>(plain_text));
+}
+
+variant_t VisualAddIn::DecryptTextSimple(variant_t& encrypted_text) {
+    ClearLastErrorPair(last_error_code_storage_, last_error_text_storage_);
+    if (!std::holds_alternative<std::string>(encrypted_text)) {
+        SetLastErrorPair(last_error_code_storage_, last_error_text_storage_, kErrWrongTypeText,
+                         std::string(u8"Ожидалась шифрованная строка HEX (VTYPE_PWSTR)."));
+        throw std::runtime_error("Expected HEX encrypted text as UTF-8 string (VTYPE_PWSTR)");
+    }
+    const std::optional<std::string> decrypted =
+        DecryptHexToUtf8(std::get<std::string>(encrypted_text));
+    if (!decrypted.has_value()) {
+        SetLastErrorPair(last_error_code_storage_, last_error_text_storage_, kErrInvalidEncryptedText,
+                         std::string(u8"Некорректный формат шифрованного текста (ожидается HEX)."));
+        return JsonErrorObjectUtf8("Invalid encrypted text format");
+    }
+    return *decrypted;
 }
 
 variant_t VisualAddIn::GenerateGeminiText(variant_t& prompt_utf8) {
