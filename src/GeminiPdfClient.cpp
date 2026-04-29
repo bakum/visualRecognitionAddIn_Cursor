@@ -164,6 +164,9 @@ boost::json::object BuildInvoiceResponseSchema() {
         props["search_keyword"] =
             boost::json::object({{"type", "array"},
                                  {"items", boost::json::object({{"type", "string"}})}});
+        props["nomenclatureSearchPhrases"] =
+            boost::json::object({{"type", "array"},
+                                 {"items", boost::json::object({{"type", "string"}})}});
         line_item["properties"] = props;
     }
 
@@ -328,11 +331,22 @@ std::string BuildRequestBody(std::string_view mime_type, const std::string& inli
         "\"Ціна без ПДВ\", \"Цена без НДС\"); set \"с НДС\" if price with VAT (e.g. \"Ціна з ПДВ\", "
         "\"Цена с НДС\"); else \"\". For "
         "lineItems, include every product/service row with name, sku, barcode, quantity, unit, price, "
-        "priceVatType, vatRate, amount, search_keyword when visible. Field search_keyword must be an "
+        "priceVatType, vatRate, amount, search_keyword, nomenclatureSearchPhrases when visible. "
+        "Field search_keyword must be an "
         "array of strings for full-text matching in ERP/1C and must be generated from field name only "
         "(do not use sku, barcode, quantity, unit, price, or other fields as keyword sources): include "
-        "normalized meaningful words/tokens from name, without duplicates. If name is empty/unknown, "
-        "return an empty array []. Field sku is the article / vendor code / SKU only "
+        "normalized meaningful words/tokens from name, without duplicates. "
+        "Field nomenclatureSearchPhrases is a separate array for nomenclature lookup in 1C and must "
+        "contain short phrase combinations (2-6 words) composed from product name tokens; each phrase "
+        "should combine multiple meaningful words, not single words only. Do not synchronize this field "
+        "with search_keyword automatically: these arrays serve different purposes. Generate 3-7 phrases "
+        "per line item when enough name tokens are available; avoid duplicates and near-duplicates. "
+        "Keep phrases concise and useful for ERP search, preserving the original document language. "
+        "Phrase examples for name \"Кабель мідний ВВГнг 3x2.5 100м\": "
+        "[\"кабель мідний ввгнг\", \"ввгнг 3x2.5 100м\", \"кабель ввгнг 3x2.5\"]. "
+        "Phrase examples for name \"Фарба акрилова біла матова 10л\": "
+        "[\"фарба акрилова біла\", \"біла матова 10л\", \"акрилова фарба 10л\"]. "
+        "If name is empty/unknown, return empty arrays []. Field sku is the article / vendor code / SKU only "
         "when this value is explicitly shown by labels/columns like Артикул, Артикул постачальника, "
         "Код товару, SKU, Article, Part number, Cat. no., etc.; if article/code is absent, ambiguous, or "
         "looks inferred from another field (including barcode), return \"\". Field "
