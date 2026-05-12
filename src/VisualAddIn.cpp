@@ -729,7 +729,9 @@ variant_t VisualAddIn::ParsePrimaryDocumentAiFromBytes(const std::vector<char>& 
         }
         const int max_out =
             GetIntPropertyOrDefault(anthropic_max_output_tokens_storage_, 32000, 4096, 128000);
-        std::string_view mime = "application/pdf";
+        // Хранить MIME в std::string, а не string_view на *det: optional уничтожается после if,
+        // иначе AnthropicExtractPrimaryDocumentJson получает висячий string_view → ложная ошибка MIME.
+        std::string inline_mime{"application/pdf"};
         if (!inline_as_pdf) {
             const std::optional<std::string> det = DetectRasterImageMimeForAi(bytes);
             if (!det.has_value()) {
@@ -738,9 +740,9 @@ variant_t VisualAddIn::ParsePrimaryDocumentAiFromBytes(const std::vector<char>& 
                                              u8"GIF, WebP, BMP, TIFF)."));
                 return JsonErrorObjectUtf8("Unsupported inline image format");
             }
-            mime = *det;
+            inline_mime = *det;
         }
-        json_out = AnthropicExtractPrimaryDocumentJson(api_key, model_id, mime, bytes, max_out,
+        json_out = AnthropicExtractPrimaryDocumentJson(api_key, model_id, inline_mime, bytes, max_out,
                                                        pipeline_err, &usage, &timeouts, &raw_response);
         if (last_anthropic_raw_response_preview_storage_) {
             *last_anthropic_raw_response_preview_storage_ =
