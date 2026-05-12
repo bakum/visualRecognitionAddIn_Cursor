@@ -572,7 +572,7 @@ std::string AnthropicExtractPrimaryDocumentJsonImpl(const std::string& api_key_u
         raw_response_out->clear();
     }
     if (api_key_utf8.empty()) {
-        error_out = "API key is empty";
+        error_out = "Anthropic API key is empty";
         return {};
     }
     if (bytes.empty()) {
@@ -725,7 +725,7 @@ std::string AnthropicGeneratePlainText(const std::string& api_key_utf8,
         raw_response_out->clear();
     }
     if (api_key_utf8.empty()) {
-        error_out = "API key is empty";
+        error_out = "Anthropic API key is empty";
         return {};
     }
     if (user_text_utf8.size() > kMaxPlainTextPromptBytes) {

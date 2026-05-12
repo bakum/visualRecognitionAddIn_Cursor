@@ -29,7 +29,8 @@
 /// ПоследняяОшибка (англ. LastErrorCode): 0 успех; 1 пустой PDF/изображение; 4 неверный Base64;
 /// 5 неверный тип (blob); 6 неверный тип (строка); 7 пустой ключ API; 8 ошибка выбранного ИИ-провайдера;
 /// 9 пустой текст запроса; 10 текст запроса слишком длинный; 99 прочее.
-/// Провайдер ИИ: AiProvider / ПровайдерИИ — строка UTF-8: gemini (по умолчанию), anthropic или claude.
+/// Провайдер ИИ: AiProvider / ПровайдерИИ — строка UTF-8: gemini (по умолчанию), anthropic, claude,
+/// а также кириллица антропик, клод (без смешения моделей: Claude — в МодельAnthropic, Gemini — в МодельGemini).
 /// Ключи: Gemini — КлючAPIAIStudio / AIStudioApiKey, МодельGemini / GeminiModel; Anthropic — КлючAPIAnthropic, МодельAnthropic.
 /// Таймауты HTTP (общие): ТаймаутПолученияGeminiМс / GeminiReceiveTimeoutMs, ОбщийДедлайнGeminiМс / GeminiTotalDeadlineMs.
 /// AnthropicMaxOutputTokens / МаксТокеновВыводаAnthropic — max_tokens для текста и разбора первички.

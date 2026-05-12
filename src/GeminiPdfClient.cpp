@@ -2010,7 +2010,7 @@ std::string GeminiExtractPrimaryDocumentJsonImpl(const std::string& api_key_utf8
         raw_response_out->clear();
     }
     if (api_key_utf8.empty()) {
-        error_out = "API key is empty";
+        error_out = "Gemini API key is empty";
         return {};
     }
     if (bytes.empty()) {
@@ -2093,7 +2093,7 @@ std::string GeminiGeneratePlainTextImpl(const std::string& api_key_utf8,
         raw_response_out->clear();
     }
     if (api_key_utf8.empty()) {
-        error_out = "API key is empty";
+        error_out = "Gemini API key is empty";
         return {};
     }
     if (user_text_utf8.size() > kMaxPlainTextPromptBytes) {
@@ -2192,7 +2192,7 @@ std::string GeminiExtractPrimaryDocumentJsonFromImageBytes(const std::string& ap
                                                            std::string* raw_response_out) {
     error_out.clear();
     if (api_key_utf8.empty()) {
-        error_out = "API key is empty";
+        error_out = "Gemini API key is empty";
         return {};
     }
     if (image_bytes.empty()) {
