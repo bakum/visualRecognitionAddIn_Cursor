@@ -27,12 +27,12 @@
 #include "Component.h"
 
 /// ПоследняяОшибка (англ. LastErrorCode): 0 успех; 1 пустой PDF/изображение; 4 неверный Base64;
-/// 5 неверный тип (blob); 6 неверный тип (строка); 7 пустой ключ API; 8 ошибка Gemini;
+/// 5 неверный тип (blob); 6 неверный тип (строка); 7 пустой ключ API; 8 ошибка выбранного ИИ-провайдера;
 /// 9 пустой текст запроса; 10 текст запроса слишком длинный; 99 прочее.
-/// Ключ: AIStudioApiKey / КлючAPIAIStudio; модель: GeminiModel / МодельGemini (UTF-8);
-/// таймауты: GeminiReceiveTimeoutMs / ТаймаутПолученияGeminiМс, GeminiTotalDeadlineMs / ОбщийДедлайнGeminiМс.
-///
-/// Локального извлечения текста из PDF нет — только Google Gemini (в т.ч. сканы).
+/// Провайдер ИИ: AiProvider / ПровайдерИИ — строка UTF-8: gemini (по умолчанию), anthropic или claude.
+/// Ключи: Gemini — КлючAPIAIStudio / AIStudioApiKey, МодельGemini / GeminiModel; Anthropic — КлючAPIAnthropic, МодельAnthropic.
+/// Таймауты HTTP (общие): ТаймаутПолученияGeminiМс / GeminiReceiveTimeoutMs, ОбщийДедлайнGeminiМс / GeminiTotalDeadlineMs.
+/// AnthropicMaxOutputTokens / МаксТокеновВыводаAnthropic — max_tokens для текста и разбора первички.
 /// Методы РазобратьПервичныйДокументPdf* без «ИИ» в имени — те же вызовы, что и *ИИ (совместимость со старым кодом 1С).
 class VisualAddIn : public Component {
 public:
@@ -51,11 +51,13 @@ public:
     variant_t ParsePrimaryDocumentImageAi(variant_t& image_blob);
     variant_t ParsePrimaryDocumentImageAiBase64(variant_t& image_base64);
 
-    /// Один аргумент — строка UTF-8 (промпт); ответ модели без принудительного JSON первички.
+    /// Один аргумент — строка UTF-8 (промпт); провайдер — свойство ПровайдерИИ / AiProvider.
     variant_t GenerateGeminiText(variant_t& prompt_utf8);
 
     /// Без параметров: JSON с полями defaultModelId и models[{id,name,notes}] для выбора МодельGemini.
     variant_t GetSupportedGeminiModels();
+    /// Без параметров: JSON каталога моделей Anthropic для свойства МодельAnthropic.
+    variant_t GetSupportedAnthropicModels();
     /// Без параметров: устанавливает быстрый профиль таймаутов Gemini (получение/общий дедлайн).
     variant_t UseFastGeminiTimeoutsProfile();
 
@@ -74,8 +76,13 @@ private:
     std::shared_ptr<variant_t> last_total_tokens_storage_;
     std::shared_ptr<variant_t> last_usage_json_storage_;
     std::shared_ptr<variant_t> last_gemini_raw_response_preview_storage_;
+    std::shared_ptr<variant_t> ai_backend_storage_;
+    std::shared_ptr<variant_t> anthropic_api_key_storage_;
+    std::shared_ptr<variant_t> anthropic_model_storage_;
+    std::shared_ptr<variant_t> anthropic_max_output_tokens_storage_;
+    std::shared_ptr<variant_t> last_anthropic_raw_response_preview_storage_;
 
-    variant_t ParsePrimaryDocumentGeminiFromBytes(const std::vector<char>& bytes, bool inline_as_pdf);
+    variant_t ParsePrimaryDocumentAiFromBytes(const std::vector<char>& bytes, bool inline_as_pdf);
     void ResetUsageStats();
     void SetUsageStats(int64_t prompt_tokens, int64_t output_tokens, int64_t total_tokens, bool has_usage);
 };

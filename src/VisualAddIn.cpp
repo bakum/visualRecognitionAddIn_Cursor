@@ -19,6 +19,7 @@
 
 #include "VisualAddIn.h"
 
+#include <algorithm>
 #include <cctype>
 #include <cstdint>
 #include <memory>
@@ -30,6 +31,7 @@
 
 #include <boost/json.hpp>
 
+#include "AnthropicMessagesClient.h"
 #include "GeminiPdfClient.h"
 
 namespace {
@@ -246,10 +248,19 @@ std::pair<int32_t, std::string> MapPipelineErrorToCodeAndText(const std::string&
         return {kErrMissingApiKey,
                 std::string(u8"Не задан ключ API (свойства КлючAPIAIStudio / AIStudioApiKey).")};
     }
+    if (error_field_utf8 == "Anthropic API key is empty") {
+        return {kErrMissingApiKey,
+                std::string(u8"Не задан ключ API Anthropic (КлючAPIAnthropic / AnthropicApiKey).")};
+    }
     if (error_field_utf8 == "Invalid Gemini model id") {
         return {kErrAiFailure,
                 std::string(u8"Некорректный идентификатор модели Gemini (свойство МодельGemini / GeminiModel): "
                             u8"допустимы латиница, цифры, «.», «-», «_».")};
+    }
+    if (error_field_utf8 == "Invalid Anthropic model id") {
+        return {kErrAiFailure,
+                std::string(u8"Некорректный идентификатор модели Anthropic (свойство МодельAnthropic / "
+                            u8"AnthropicModel): допустимы латиница, цифры, «.», «-», «_».")};
     }
     if (error_field_utf8 == "Empty image data") {
         return {kErrEmptyPdf, std::string(u8"Пустые данные изображения.")};
@@ -268,6 +279,19 @@ std::pair<int32_t, std::string> MapPipelineErrorToCodeAndText(const std::string&
     if (error_field_utf8 == "Prompt text too large") {
         return {kErrTextPromptTooLarge,
                 std::string(u8"Текст запроса слишком длинный (лимит 2 МиБ UTF-8).")};
+    }
+    if (error_field_utf8 == "Empty model JSON body") {
+        return {kErrAiFailure, std::string(u8"Модель вернула пустое тело JSON.")};
+    }
+    if (error_field_utf8 == "Anthropic request payload too large") {
+        return {kErrAiFailure, std::string(u8"Запрос к Anthropic слишком большой (лимит ~32 МиБ).")};
+    }
+    if (error_field_utf8 == "Anthropic output truncated (max_tokens)") {
+        return {kErrAiFailure,
+                std::string(u8"Ответ Anthropic обрезан по max_tokens; увеличьте МаксТокеновВыводаAnthropic.")};
+    }
+    if (error_field_utf8 == "Invalid inline MIME type") {
+        return {kErrAiFailure, std::string(u8"Недопустимый MIME-тип вложения для ИИ-запроса.")};
     }
     return {kErrUnknown, error_field_utf8};
 }
@@ -302,6 +326,14 @@ std::string GetTrimmedUtf8Property(const std::shared_ptr<variant_t>& storage) {
         k.pop_back();
     }
     return k;
+}
+
+bool AiBackendIsAnthropic(const std::shared_ptr<variant_t>& ai_backend_storage) {
+    std::string v = GetTrimmedUtf8Property(ai_backend_storage);
+    std::transform(v.begin(), v.end(), v.begin(), [](unsigned char c) {
+        return static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    });
+    return v == "anthropic" || v == "claude";
 }
 
 int GetIntPropertyOrDefault(const std::shared_ptr<variant_t>& storage,
@@ -352,6 +384,38 @@ std::string MakeUtf8Preview(const std::string& s, const size_t max_bytes) {
     return s.substr(0, max_bytes) + "...(truncated)";
 }
 
+std::optional<std::string> DetectRasterImageMimeForAi(const std::vector<char>& b) {
+    if (b.size() < 2) {
+        return std::nullopt;
+    }
+    const auto* u = reinterpret_cast<const unsigned char*>(b.data());
+    const size_t n = b.size();
+    if (n >= 3U && u[0] == 0xFFU && u[1] == 0xD8U && u[2] == 0xFFU) {
+        return std::string("image/jpeg");
+    }
+    if (n >= 8U && u[0] == 0x89U && u[1] == 'P' && u[2] == 'N' && u[3] == 'G' && u[4] == 0x0DU
+        && u[5] == 0x0AU && u[6] == 0x1AU && u[7] == 0x0AU) {
+        return std::string("image/png");
+    }
+    if (n >= 6U && u[0] == 'G' && u[1] == 'I' && u[2] == 'F' && u[3] == '8'
+        && (u[4] == '7' || u[4] == '9') && u[5] == 'a') {
+        return std::string("image/gif");
+    }
+    if (n >= 12U && u[0] == 'R' && u[1] == 'I' && u[2] == 'F' && u[3] == 'F' && u[8] == 'W'
+        && u[9] == 'E' && u[10] == 'B' && u[11] == 'P') {
+        return std::string("image/webp");
+    }
+    if (u[0] == 'B' && u[1] == 'M') {
+        return std::string("image/bmp");
+    }
+    if (n >= 4U
+        && ((u[0] == 'I' && u[1] == 'I' && u[2] == 0x2AU && u[3] == 0)
+            || (u[0] == 'M' && u[1] == 'M' && u[2] == 0 && u[3] == 0x2AU))) {
+        return std::string("image/tiff");
+    }
+    return std::nullopt;
+}
+
 } // namespace
 
 VisualAddIn::VisualAddIn()
@@ -365,7 +429,12 @@ VisualAddIn::VisualAddIn()
       last_output_tokens_storage_(std::make_shared<variant_t>(0.0)),
       last_total_tokens_storage_(std::make_shared<variant_t>(0.0)),
       last_usage_json_storage_(std::make_shared<variant_t>(std::string("{}"))),
-      last_gemini_raw_response_preview_storage_(std::make_shared<variant_t>(std::string())) {
+      last_gemini_raw_response_preview_storage_(std::make_shared<variant_t>(std::string())),
+      ai_backend_storage_(std::make_shared<variant_t>(std::string("gemini"))),
+      anthropic_api_key_storage_(std::make_shared<variant_t>(std::string())),
+      anthropic_model_storage_(std::make_shared<variant_t>(std::string(kAnthropicDefaultModelId))),
+      anthropic_max_output_tokens_storage_(std::make_shared<variant_t>(int32_t{8192})),
+      last_anthropic_raw_response_preview_storage_(std::make_shared<variant_t>(std::string())) {
     AddProperty(
         u"Version",
         u"Версия",
@@ -391,6 +460,8 @@ VisualAddIn::VisualAddIn()
         },
         nullptr);
 
+    AddProperty(u"AiProvider", u"ПровайдерИИ", ai_backend_storage_);
+
     AddProperty(u"AIStudioApiKey", u"КлючAPIAIStudio", ai_studio_api_key_storage_);
     AddProperty(u"GeminiModel", u"МодельGemini", gemini_model_storage_);
     AddProperty(u"GeminiReceiveTimeoutMs", u"ТаймаутПолученияGeminiМс",
@@ -403,9 +474,15 @@ VisualAddIn::VisualAddIn()
     AddProperty(u"LastGeminiUsageJson", u"ПоследняяСтатистикаТокеновJSON", last_usage_json_storage_);
     AddProperty(u"LastGeminiRawResponsePreview", u"ПоследнийСыройОтветGeminiПревью",
                 last_gemini_raw_response_preview_storage_);
+    AddProperty(u"AnthropicApiKey", u"КлючAPIAnthropic", anthropic_api_key_storage_);
+    AddProperty(u"AnthropicModel", u"МодельAnthropic", anthropic_model_storage_);
+    AddProperty(u"AnthropicMaxOutputTokens", u"МаксТокеновВыводаAnthropic",
+                anthropic_max_output_tokens_storage_);
+    AddProperty(u"LastAnthropicRawResponsePreview", u"ПоследнийСыройОтветAnthropicПревью",
+                last_anthropic_raw_response_preview_storage_);
 
     // Перший аргумент AddMethod — англійська назва (lang=0), другий — російська (lang=1).
-    // Два варіанти PDF викликають той самий Gemini-шлях (старий код 1С без «ИИ» у імені).
+    // Два варіанти PDF викликають той самий шлях розбору (Gemini або Anthropic за ПровайдерИИ).
     AddMethod(u"ParsePrimaryDocumentPdf", u"РазобратьПервичныйДокументPdf", this,
               &VisualAddIn::ParsePrimaryDocumentPdfAi, {});
     AddMethod(u"EncodeToBase64", u"КодироватьВBase64", this, &VisualAddIn::EncodeToBase64, {});
@@ -432,6 +509,8 @@ VisualAddIn::VisualAddIn()
               {});
     AddMethod(u"GetSupportedGeminiModels", u"ПолучитьПоддерживаемыеМоделиGemini", this,
               &VisualAddIn::GetSupportedGeminiModels, {});
+    AddMethod(u"GetSupportedAnthropicModels", u"ПолучитьПоддерживаемыеМоделиAnthropic", this,
+              &VisualAddIn::GetSupportedAnthropicModels, {});
     AddMethod(u"UseFastGeminiTimeoutsProfile", u"ИспользоватьБыстрыйПрофильТаймаутовGemini", this,
               &VisualAddIn::UseFastGeminiTimeoutsProfile, {});
 }
@@ -440,6 +519,12 @@ variant_t VisualAddIn::GetSupportedGeminiModels() {
     ClearLastErrorPair(last_error_code_storage_, last_error_text_storage_);
     ResetUsageStats();
     return GeminiSupportedModelsCatalogJson();
+}
+
+variant_t VisualAddIn::GetSupportedAnthropicModels() {
+    ClearLastErrorPair(last_error_code_storage_, last_error_text_storage_);
+    ResetUsageStats();
+    return AnthropicSupportedModelsCatalogJson();
 }
 
 variant_t VisualAddIn::UseFastGeminiTimeoutsProfile() {
@@ -475,6 +560,9 @@ void VisualAddIn::ResetUsageStats() {
     if (last_gemini_raw_response_preview_storage_) {
         *last_gemini_raw_response_preview_storage_ = std::string();
     }
+    if (last_anthropic_raw_response_preview_storage_) {
+        *last_anthropic_raw_response_preview_storage_ = std::string();
+    }
 }
 
 void VisualAddIn::SetUsageStats(const int64_t prompt_tokens,
@@ -500,8 +588,8 @@ void VisualAddIn::SetUsageStats(const int64_t prompt_tokens,
     }
 }
 
-variant_t VisualAddIn::ParsePrimaryDocumentGeminiFromBytes(const std::vector<char>& bytes,
-                                                           const bool inline_as_pdf) {
+variant_t VisualAddIn::ParsePrimaryDocumentAiFromBytes(const std::vector<char>& bytes,
+                                                       const bool inline_as_pdf) {
     ResetUsageStats();
     if (bytes.empty()) {
         SetLastErrorPair(last_error_code_storage_, last_error_text_storage_, kErrEmptyPdf,
@@ -509,50 +597,88 @@ variant_t VisualAddIn::ParsePrimaryDocumentGeminiFromBytes(const std::vector<cha
                                        : std::string(u8"Пустые данные изображения."));
         return JsonErrorObjectUtf8(inline_as_pdf ? "Empty PDF data" : "Empty image data");
     }
-    const std::string api_key = GetTrimmedUtf8Property(ai_studio_api_key_storage_);
-    if (api_key.empty()) {
-        SetLastErrorPair(last_error_code_storage_, last_error_text_storage_, kErrMissingApiKey,
-                         std::string(u8"Не задан ключ API (КлючAPIAIStudio / AIStudioApiKey)."));
-        return JsonErrorObjectUtf8("API key is empty");
-    }
-    const std::string model_id = GetTrimmedUtf8Property(gemini_model_storage_);
+
     GeminiHttpTimeouts timeouts;
     timeouts.receive_timeout_ms = GetIntPropertyOrDefault(
         gemini_receive_timeout_ms_storage_, 45000, 1000, 300000);
     timeouts.total_deadline_ms = GetIntPropertyOrDefault(
         gemini_total_deadline_ms_storage_, 65000, 5000, 600000);
-    std::string gemini_err;
+
+    const bool use_anthropic = AiBackendIsAnthropic(ai_backend_storage_);
+    std::string pipeline_err;
     GeminiUsageStats usage;
     std::string raw_response;
-    const std::string json =
-        inline_as_pdf
-            ? GeminiExtractPrimaryDocumentJson(api_key, model_id, bytes, gemini_err, &usage, &timeouts,
-                                               &raw_response)
-            : GeminiExtractPrimaryDocumentJsonFromImageBytes(api_key, model_id, bytes, gemini_err,
-                                                             &usage, &timeouts, &raw_response);
-    if (last_gemini_raw_response_preview_storage_) {
-        *last_gemini_raw_response_preview_storage_ =
-            MakeUtf8Preview(raw_response, kGeminiRawPreviewMaxBytes);
+    std::string json_out;
+
+    if (use_anthropic) {
+        const std::string api_key = GetTrimmedUtf8Property(anthropic_api_key_storage_);
+        if (api_key.empty()) {
+            SetLastErrorPair(last_error_code_storage_, last_error_text_storage_, kErrMissingApiKey,
+                             std::string(u8"Не задан ключ API Anthropic (КлючAPIAnthropic / AnthropicApiKey)."));
+            variant_t err = JsonErrorObjectUtf8("Anthropic API key is empty");
+            SyncLastErrorFromParseResult(last_error_code_storage_, last_error_text_storage_, err);
+            return err;
+        }
+        const std::string model_id = GetTrimmedUtf8Property(anthropic_model_storage_);
+        const int max_out =
+            GetIntPropertyOrDefault(anthropic_max_output_tokens_storage_, 32000, 4096, 128000);
+        std::string_view mime = "application/pdf";
+        if (!inline_as_pdf) {
+            const std::optional<std::string> det = DetectRasterImageMimeForAi(bytes);
+            if (!det.has_value()) {
+                SetLastErrorPair(last_error_code_storage_, last_error_text_storage_, kErrAiFailure,
+                                 std::string(u8"Формат изображения не поддерживается (ожидаются JPEG, PNG, "
+                                             u8"GIF, WebP, BMP, TIFF)."));
+                return JsonErrorObjectUtf8("Unsupported inline image format");
+            }
+            mime = *det;
+        }
+        json_out = AnthropicExtractPrimaryDocumentJson(api_key, model_id, mime, bytes, max_out,
+                                                       pipeline_err, &usage, &timeouts, &raw_response);
+        if (last_anthropic_raw_response_preview_storage_) {
+            *last_anthropic_raw_response_preview_storage_ =
+                MakeUtf8Preview(raw_response, kGeminiRawPreviewMaxBytes);
+        }
+    } else {
+        const std::string api_key = GetTrimmedUtf8Property(ai_studio_api_key_storage_);
+        if (api_key.empty()) {
+            SetLastErrorPair(last_error_code_storage_, last_error_text_storage_, kErrMissingApiKey,
+                             std::string(u8"Не задан ключ API (КлючAPIAIStudio / AIStudioApiKey)."));
+            return JsonErrorObjectUtf8("API key is empty");
+        }
+        const std::string model_id = GetTrimmedUtf8Property(gemini_model_storage_);
+        json_out =
+            inline_as_pdf
+                ? GeminiExtractPrimaryDocumentJson(api_key, model_id, bytes, pipeline_err, &usage,
+                                                     &timeouts, &raw_response)
+                : GeminiExtractPrimaryDocumentJsonFromImageBytes(api_key, model_id, bytes, pipeline_err,
+                                                                 &usage, &timeouts, &raw_response);
+        if (last_gemini_raw_response_preview_storage_) {
+            *last_gemini_raw_response_preview_storage_ =
+                MakeUtf8Preview(raw_response, kGeminiRawPreviewMaxBytes);
+        }
     }
+
     SetUsageStats(usage.prompt_tokens, usage.output_tokens, usage.total_tokens, usage.has_usage);
-    if (!gemini_err.empty()) {
-        if (gemini_err == "Invalid Gemini model id") {
-            const auto mapped = MapPipelineErrorToCodeAndText(gemini_err);
-            SetLastErrorPair(last_error_code_storage_, last_error_text_storage_, mapped.first,
-                             mapped.second);
-        } else if (gemini_err == "PDF bytes passed to image method"
-                   || gemini_err == "Unsupported inline image format"
-                   || gemini_err == "Empty image data") {
-            const auto mapped = MapPipelineErrorToCodeAndText(gemini_err);
+    if (!pipeline_err.empty()) {
+        if (pipeline_err == "Invalid Gemini model id" || pipeline_err == "Invalid Anthropic model id"
+            || pipeline_err == "PDF bytes passed to image method"
+            || pipeline_err == "Unsupported inline image format" || pipeline_err == "Empty image data"
+            || pipeline_err == "Invalid inline MIME type" || pipeline_err == "Empty model JSON body"
+            || pipeline_err == "Anthropic request payload too large"
+            || pipeline_err == "Anthropic output truncated (max_tokens)") {
+            const auto mapped = MapPipelineErrorToCodeAndText(pipeline_err);
             SetLastErrorPair(last_error_code_storage_, last_error_text_storage_, mapped.first,
                              mapped.second);
         } else {
             SetLastErrorPair(last_error_code_storage_, last_error_text_storage_, kErrAiFailure,
-                             std::string(u8"Ошибка Gemini API: ") + gemini_err);
+                             (use_anthropic ? std::string(u8"Ошибка Anthropic API: ")
+                                            : std::string(u8"Ошибка Gemini API: "))
+                                 + pipeline_err);
         }
-        return JsonErrorObjectUtf8(gemini_err);
+        return JsonErrorObjectUtf8(pipeline_err);
     }
-    return json;
+    return json_out;
 }
 
 variant_t VisualAddIn::ParsePrimaryDocumentPdfAi(variant_t& pdf_blob) {
@@ -562,7 +688,7 @@ variant_t VisualAddIn::ParsePrimaryDocumentPdfAi(variant_t& pdf_blob) {
                          std::string(u8"Ожидались двоичные данные PDF (VTYPE_BLOB)."));
         throw std::runtime_error("Expected PDF as binary data (VTYPE_BLOB)");
     }
-    variant_t r = ParsePrimaryDocumentGeminiFromBytes(std::get<std::vector<char>>(pdf_blob), true);
+    variant_t r = ParsePrimaryDocumentAiFromBytes(std::get<std::vector<char>>(pdf_blob), true);
     SyncLastErrorFromParseResult(last_error_code_storage_, last_error_text_storage_, r);
     return r;
 }
@@ -574,7 +700,7 @@ variant_t VisualAddIn::ParsePrimaryDocumentImageAi(variant_t& image_blob) {
                          std::string(u8"Ожидались двоичные данные изображения (VTYPE_BLOB)."));
         throw std::runtime_error("Expected image as binary data (VTYPE_BLOB)");
     }
-    variant_t r = ParsePrimaryDocumentGeminiFromBytes(std::get<std::vector<char>>(image_blob), false);
+    variant_t r = ParsePrimaryDocumentAiFromBytes(std::get<std::vector<char>>(image_blob), false);
     SyncLastErrorFromParseResult(last_error_code_storage_, last_error_text_storage_, r);
     return r;
 }
@@ -681,6 +807,51 @@ variant_t VisualAddIn::GenerateGeminiText(variant_t& prompt_utf8) {
                          std::string(u8"Ожидалась строка UTF-8 (VTYPE_PWSTR)."));
         throw std::runtime_error("Expected prompt as UTF-8 string (VTYPE_PWSTR)");
     }
+
+    GeminiHttpTimeouts timeouts;
+    timeouts.receive_timeout_ms = GetIntPropertyOrDefault(
+        gemini_receive_timeout_ms_storage_, 45000, 1000, 300000);
+    timeouts.total_deadline_ms = GetIntPropertyOrDefault(
+        gemini_total_deadline_ms_storage_, 65000, 5000, 600000);
+
+    const bool use_anthropic = AiBackendIsAnthropic(ai_backend_storage_);
+    if (use_anthropic) {
+        const std::string api_key = GetTrimmedUtf8Property(anthropic_api_key_storage_);
+        if (api_key.empty()) {
+            SetLastErrorPair(last_error_code_storage_, last_error_text_storage_, kErrMissingApiKey,
+                             std::string(u8"Не задан ключ API Anthropic (КлючAPIAnthropic / AnthropicApiKey)."));
+            variant_t err = JsonErrorObjectUtf8("Anthropic API key is empty");
+            SyncLastErrorFromParseResult(last_error_code_storage_, last_error_text_storage_, err);
+            return err;
+        }
+        const std::string model_id = GetTrimmedUtf8Property(anthropic_model_storage_);
+        const int max_out = GetIntPropertyOrDefault(anthropic_max_output_tokens_storage_, 8192, 1, 128000);
+        std::string api_err;
+        GeminiUsageStats usage;
+        std::string raw_response;
+        const std::string text_out =
+            AnthropicGeneratePlainText(api_key, model_id, max_out, std::get<std::string>(prompt_utf8),
+                                       api_err, &usage, &timeouts, &raw_response);
+        if (last_anthropic_raw_response_preview_storage_) {
+            *last_anthropic_raw_response_preview_storage_ =
+                MakeUtf8Preview(raw_response, kGeminiRawPreviewMaxBytes);
+        }
+        SetUsageStats(usage.prompt_tokens, usage.output_tokens, usage.total_tokens, usage.has_usage);
+        if (!api_err.empty()) {
+            if (api_err == "Invalid Anthropic model id" || api_err == "Empty prompt text"
+                || api_err == "Prompt text too large") {
+                const auto mapped = MapPipelineErrorToCodeAndText(api_err);
+                SetLastErrorPair(last_error_code_storage_, last_error_text_storage_, mapped.first,
+                                 mapped.second);
+            } else {
+                SetLastErrorPair(last_error_code_storage_, last_error_text_storage_, kErrAiFailure,
+                                 std::string(u8"Ошибка Anthropic API: ") + api_err);
+            }
+            return JsonErrorObjectUtf8(api_err);
+        }
+        return text_out;
+    }
+
     const std::string api_key = GetTrimmedUtf8Property(ai_studio_api_key_storage_);
     if (api_key.empty()) {
         SetLastErrorPair(last_error_code_storage_, last_error_text_storage_, kErrMissingApiKey,
@@ -690,11 +861,6 @@ variant_t VisualAddIn::GenerateGeminiText(variant_t& prompt_utf8) {
         return err;
     }
     const std::string model_id = GetTrimmedUtf8Property(gemini_model_storage_);
-    GeminiHttpTimeouts timeouts;
-    timeouts.receive_timeout_ms = GetIntPropertyOrDefault(
-        gemini_receive_timeout_ms_storage_, 45000, 1000, 300000);
-    timeouts.total_deadline_ms = GetIntPropertyOrDefault(
-        gemini_total_deadline_ms_storage_, 65000, 5000, 600000);
     std::string gemini_err;
     GeminiUsageStats usage;
     std::string raw_response;
