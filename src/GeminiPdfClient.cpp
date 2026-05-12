@@ -141,8 +141,12 @@ std::string ResolveGeminiModelAlias(std::string_view model_id_utf8) {
     if (key == "gemini3pro" || key == "gemini31pro") {
         return "gemini-3.1-pro-preview";
     }
+    // GA с идентификатором gemini-3.1-flash-lite; preview gemini-3.1-flash-lite-preview отключён API (см. объявления Google).
+    if (key == "gemini31flashlitepreview") {
+        return "gemini-3.1-flash-lite";
+    }
     if (key == "gemini3flashlite" || key == "gemini31flashlite") {
-        return "gemini-3.1-flash-lite-preview";
+        return "gemini-3.1-flash-lite";
     }
     return model;
 }
@@ -2234,12 +2238,12 @@ std::string GeminiSupportedModelsCatalogJson() {
     };
     add("gemini-3.1-pro-preview", "Gemini 3.1 Pro",
         u8"Линейка выше 2.5; превью, доступность и квоты — в AI Studio.");
-    add("gemini-3.1-flash-lite-preview", "Gemini 3.1 Flash-Lite",
-        u8"Облегчённая 3.1; превью.");
+    add("gemini-3.1-flash-lite", "Gemini 3.1 Flash-Lite",
+        u8"Облегчённая 3.1; GA в Gemini API. Устаревший gemini-3.1-flash-lite-preview в аддине автоматически заменяется на этот id.");
     add("gemini-3-pro", "Gemini 3 Pro (alias)",
         u8"Алиас в аддине: автоматически мапится на gemini-3.1-pro-preview.");
     add("gemini-3-flash-lite", "Gemini 3 Flash-Lite (alias)",
-        u8"Алиас в аддине: автоматически мапится на gemini-3.1-flash-lite-preview.");
+        u8"Алиас в аддине: автоматически мапится на gemini-3.1-flash-lite.");
     add("gemini-3-flash-preview", "Gemini 3 Flash",
         u8"Основной Flash линейки 3 в API (имени gemini-3.0-flash нет). Не путать с несуществующим gemini-3.1-flash без суффикса.");
     add("gemini-2.5-pro", "Gemini 2.5 Pro", u8"Выше качество, ниже скорость; PDF и изображения.");
@@ -2252,13 +2256,13 @@ std::string GeminiSupportedModelsCatalogJson() {
     root["defaultModelId"] = std::string(kGeminiDefaultModelId);
     root["namingNote"] = std::string(
         u8"Отдельных моделей gemini-3.0-flash и gemini-3.1-flash (без суффикса) в Gemini API нет. "
-        u8"Flash для линейки 3 — gemini-3-flash-preview; облегчённый вариант 3.1 — gemini-3.1-flash-lite-preview. "
+        u8"Flash для линейки 3 — gemini-3-flash-preview; облегчённый вариант 3.1 — gemini-3.1-flash-lite (GA). "
         u8"Для картинок в документации также фигурирует gemini-3.1-flash-image-preview.");
     root["propertyHint"] =
         std::string(u8"В свойство МодельGemini (GeminiModel) подставляйте значение поля id из массива models.");
     root["aliasesHint"] = std::string(
         u8"Также поддерживаются пользовательские алиасы gemini-3-pro и gemini-3-flash-lite "
-        u8"(включая варианты с пробелами): они автоматически приводятся к актуальным 3.1 preview ID.");
+        u8"(включая варианты с пробелами): они автоматически приводятся к актуальным идентификаторам 3.1 (Flash-Lite — GA).");
     root["disclaimer"] = std::string(
         u8"Модели линейки Gemini 1.x и ниже 2.0 в список не включены (для generateContent не рекомендуются). "
         u8"Идентификаторы с суффиксом preview могут меняться. "
