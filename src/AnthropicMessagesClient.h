@@ -7,7 +7,7 @@
 #include "GeminiPdfClient.h"
 
 /// Идентификатор модели по умолчанию (если из 1С передана пустая строка).
-inline constexpr char kAnthropicDefaultModelId[] = "claude-sonnet-4-20250514";
+inline constexpr char kAnthropicDefaultModelId[] = "claude-haiku-4-5-20251001";
 
 /// Текстовый запрос к Anthropic Messages API; ответ — строка UTF-8 (контент ассистента).
 /// Ключ: свойства аддина AnthropicApiKey / КлючAPIAnthropic; модель: AnthropicModel / МодельAnthropic.
