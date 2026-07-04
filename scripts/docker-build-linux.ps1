@@ -98,10 +98,10 @@ if ($NoDeps) {
 }
 if ($is32) {
     $steps.Add('echo "[docker-build] Step 5/6: Configuring CMake"')
-    $steps.Add("cmake -S . -B $dockerPosix -G Ninja -DCMAKE_BUILD_TYPE=Release -DBOOST_ROOT=`$BOOST_ROOT -DCMAKE_CXX_FLAGS='-m32'")
+    $steps.Add("cmake -S . -B $dockerPosix -G Ninja -DCMAKE_BUILD_TYPE=Release -DBOOST_ROOT=`$BOOST_ROOT -DCMAKE_CXX_FLAGS='-m32' -DVISUAL_ADDIN_BUILD_TESTS=OFF")
 } else {
     $steps.Add('echo "[docker-build] Step 5/6: Configuring CMake"')
-    $steps.Add("cmake -S . -B $dockerPosix -G Ninja -DCMAKE_BUILD_TYPE=Release -DBOOST_ROOT=`$BOOST_ROOT")
+    $steps.Add("cmake -S . -B $dockerPosix -G Ninja -DCMAKE_BUILD_TYPE=Release -DBOOST_ROOT=`$BOOST_ROOT -DVISUAL_ADDIN_BUILD_TESTS=OFF")
 }
 $steps.Add('echo "[docker-build] Step 6/6: Building with CMake"')
 $steps.Add("cmake --build $dockerPosix --parallel `$(nproc)")

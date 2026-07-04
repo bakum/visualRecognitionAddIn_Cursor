@@ -27,6 +27,10 @@ set(_VIS_ADDIN_CORE_SOURCES
 
 add_library(VisualRecognitionAddInCore STATIC ${_VIS_ADDIN_CORE_SOURCES})
 
+if(NOT WIN32)
+    set_target_properties(VisualRecognitionAddInCore PROPERTIES POSITION_INDEPENDENT_CODE ON)
+endif()
+
 target_include_directories(VisualRecognitionAddInCore
     PUBLIC
         "${CMAKE_CURRENT_SOURCE_DIR}/src"
