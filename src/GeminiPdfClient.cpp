@@ -141,8 +141,12 @@ std::string ResolveGeminiModelAlias(std::string_view model_id_utf8) {
     if (key == "gemini3pro" || key == "gemini31pro") {
         return "gemini-3.1-pro-preview";
     }
+    // GA с идентификатором gemini-3.1-flash-lite; preview gemini-3.1-flash-lite-preview отключён API (см. объявления Google).
+    if (key == "gemini31flashlitepreview") {
+        return "gemini-3.1-flash-lite";
+    }
     if (key == "gemini3flashlite" || key == "gemini31flashlite") {
-        return "gemini-3.1-flash-lite-preview";
+        return "gemini-3.1-flash-lite";
     }
     return model;
 }
@@ -305,6 +309,77 @@ bool IsAllowedInlineMime(std::string_view mime) {
         || mime == "image/gif" || mime == "image/webp" || mime == "image/bmp" || mime == "image/tiff";
 }
 
+const char* PrimaryDocumentExtractionInstructionUtf8() {
+    return "You are given an attached file: either a PDF or a single raster image (e.g. JPEG, PNG). "
+           "For PDF: pages may be pure scans, have a selectable text layer, or both — read everything "
+           "that is visibly rendered on each page. For one image: read all visible text and layout from "
+           "the picture. Before extracting fields, detect page/image orientation and read text in corrected "
+           "orientation (including 90 degrees, 180 degrees, and 270 degrees rotations) when needed. The "
+           "content may be a primary accounting document (invoice, bill, act, waybill, "
+           "receipt, etc.) or another business graphic document; visible text may be Ukrainian, Russian, "
+           "English, or other languages shown. Extract all data relevant to the schema and return a single "
+           "JSON object that strictly follows the provided JSON schema. Use empty string \"\" for unknown "
+           "fields. Preserve the original language and spelling from the document for text values. Field "
+           "rawText must contain the full visible text from the whole document/image, not only the title: "
+           "include table headers, row text, totals and VAT labels if visible (examples: \"Ціна без ПДВ\", "
+           "\"Ціна з ПДВ\", \"Сума ПДВ\", \"Всього без ПДВ\", \"Всього з ПДВ\", \"без НДС\", \"с НДС\"). "
+           "Field priceColumnVatType: set \"без НДС\" if table header says price without VAT (e.g. "
+           "\"Ціна без ПДВ\", \"Цена без НДС\"); set \"с НДС\" if price with VAT (e.g. \"Ціна з ПДВ\", "
+           "\"Цена с НДС\"); else \"\". For "
+           "lineItems, include every product/service row with name, sku, barcode, quantity, unit, price, "
+           "priceVatType, vatRate, amount, search_keyword, nomenclatureSearchPhrases when visible. "
+           "Field search_keyword must be an "
+           "array of strings for full-text matching in ERP/1C and must be generated from field name only "
+           "(do not use sku, barcode, quantity, unit, price, or other fields as keyword sources): include "
+           "normalized meaningful words/tokens from name, without duplicates. "
+           "Field nomenclatureSearchPhrases is a separate array for nomenclature lookup in 1C and must "
+           "contain short phrase combinations (2-6 words) composed from product name tokens; each phrase "
+           "should combine multiple meaningful words, not single words only. Do not synchronize this field "
+           "with search_keyword automatically: these arrays serve different purposes. Generate 3-7 phrases "
+           "per line item when enough name tokens are available; avoid duplicates and near-duplicates. "
+           "Keep phrases concise and useful for ERP search, preserving the original document language. "
+           "Phrase examples for name \"Кабель мідний ВВГнг 3x2.5 100м\": "
+           "[\"кабель мідний ввгнг\", \"ввгнг 3x2.5 100м\", \"кабель ввгнг 3x2.5\"]. "
+           "Phrase examples for name \"Фарба акрилова біла матова 10л\": "
+           "[\"фарба акрилова біла\", \"біла матова 10л\", \"акрилова фарба 10л\"]. "
+           "If name is empty/unknown, return empty arrays []. Field sku is the article / vendor code / SKU only "
+           "when this value is explicitly shown by labels/columns like Артикул, Артикул постачальника, "
+           "Код товару, SKU, Article, Part number, Cat. no., etc.; if article/code is absent, ambiguous, or "
+           "looks inferred from another field (including barcode), return \"\". Field "
+           "barcode is a product barcode value from labels like Штрихкод, Barcode, EAN, GTIN, UPC "
+           "(digits only, keep leading zeros), otherwise \"\". Field priceVatType is \"с НДС\" when the "
+           "line price explicitly includes VAT, \"без НДС\" when the line price explicitly excludes VAT; "
+           "if VAT status is not explicitly stated for that line but priceColumnVatType is known, copy "
+           "priceColumnVatType into each line. Field vatRate is the explicit VAT "
+           "rate for that line (examples: \"20%\", \"7%\", \"0%\", \"без НДС\"); if no clear per-line rate is "
+           "shown, use \"\". Omit other fields only if absent. "
+           "In counterparty: add supplier_search_keyword and buyer_search_keyword as arrays of keywords "
+           "generated from supplier and buyer names respectively; preferably include just the company name "
+           "as a single keyword, without duplicates. If name is empty/unknown, return []. supplierInn is the tax id of the "
+           "supplier/seller/issuer (e.g. ЄДРПОУ, ДРФО, ИНН next to Постачальник/Продавець/Виконавець); "
+           "buyerInn is the buyer's tax id when shown (Покупець/Замовник). supplierKpp and buyerKpp are "
+           "Russian КПП when present; otherwise \"\". supplierOkpo and buyerOkpo: in Russian "
+           "documents use label ОКПО (8 digits for organizations, 10 for sole proprietors); in Ukrainian "
+           "documents the same role is ЄДРПОУ (typically 8 digits for legal entities) — put that value "
+           "in supplierOkpo/buyerOkpo when it is the party's registration/statistical code, even if also "
+           "in supplierInn. If absent, \"\". Do not put the buyer's code into supplierOkpo. "
+           "For contract.numberAndDetails: the sign № (and prefixes like N/Nr) is not part of the value; "
+           "remove it and keep only meaningful contract details/identifier text. "
+           "Field documentDate: date of the current primary document itself (invoice/act/waybill date), "
+           "not the contract date. If multiple dates are visible, choose the date tied to the main "
+           "document header/title, not contract references; output strictly in YYYY/mm/dd format, or \"\" "
+           "if absent/unclear. "
+           "Field documentTitle: the visible printed document title or form name at the top (e.g. "
+           "\"Счет на оплату\", \"Приходная накладная\", \"Акт выполненных работ\"); use \"\" if absent. "
+           "Field documentType: infer from documentTitle (and header wording) — exactly one enum: "
+           "Счет — invoice, bill, payment invoice, счет-фактура, proforma, рахунок (on payment), etc.; "
+           "ПриходнаяНакладная — incoming / goods receipt, приходная накладная, прибуткова накладна; "
+           "РасходнаяНакладная — outgoing, расходная накладная, видаткова накладна; "
+           "АктВыполненныхРабот — act of works/services, акт выполненных работ, акт наданих послуг, "
+           "акт прийому-передачі, acceptance certificates for works/services; "
+           "Неопределено — when the title does not clearly match any of the above.";
+}
+
 std::string BuildRequestBody(std::string_view mime_type, const std::string& inline_b64) {
     boost::json::object inline_data;
     inline_data["mime_type"] = std::string(mime_type);
@@ -313,78 +388,8 @@ std::string BuildRequestBody(std::string_view mime_type, const std::string& inli
     boost::json::object part_binary;
     part_binary["inline_data"] = inline_data;
 
-    const char* prompt =
-        "You are given an attached file: either a PDF or a single raster image (e.g. JPEG, PNG). "
-        "For PDF: pages may be pure scans, have a selectable text layer, or both — read everything "
-        "that is visibly rendered on each page. For one image: read all visible text and layout from "
-        "the picture. Before extracting fields, detect page/image orientation and read text in corrected "
-        "orientation (including 90 degrees, 180 degrees, and 270 degrees rotations) when needed. The "
-        "content may be a primary accounting document (invoice, bill, act, waybill, "
-        "receipt, etc.) or another business graphic document; visible text may be Ukrainian, Russian, "
-        "English, or other languages shown. Extract all data relevant to the schema and return a single "
-        "JSON object that strictly follows the provided JSON schema. Use empty string \"\" for unknown "
-        "fields. Preserve the original language and spelling from the document for text values. Field "
-        "rawText must contain the full visible text from the whole document/image, not only the title: "
-        "include table headers, row text, totals and VAT labels if visible (examples: \"Ціна без ПДВ\", "
-        "\"Ціна з ПДВ\", \"Сума ПДВ\", \"Всього без ПДВ\", \"Всього з ПДВ\", \"без НДС\", \"с НДС\"). "
-        "Field priceColumnVatType: set \"без НДС\" if table header says price without VAT (e.g. "
-        "\"Ціна без ПДВ\", \"Цена без НДС\"); set \"с НДС\" if price with VAT (e.g. \"Ціна з ПДВ\", "
-        "\"Цена с НДС\"); else \"\". For "
-        "lineItems, include every product/service row with name, sku, barcode, quantity, unit, price, "
-        "priceVatType, vatRate, amount, search_keyword, nomenclatureSearchPhrases when visible. "
-        "Field search_keyword must be an "
-        "array of strings for full-text matching in ERP/1C and must be generated from field name only "
-        "(do not use sku, barcode, quantity, unit, price, or other fields as keyword sources): include "
-        "normalized meaningful words/tokens from name, without duplicates. "
-        "Field nomenclatureSearchPhrases is a separate array for nomenclature lookup in 1C and must "
-        "contain short phrase combinations (2-6 words) composed from product name tokens; each phrase "
-        "should combine multiple meaningful words, not single words only. Do not synchronize this field "
-        "with search_keyword automatically: these arrays serve different purposes. Generate 3-7 phrases "
-        "per line item when enough name tokens are available; avoid duplicates and near-duplicates. "
-        "Keep phrases concise and useful for ERP search, preserving the original document language. "
-        "Phrase examples for name \"Кабель мідний ВВГнг 3x2.5 100м\": "
-        "[\"кабель мідний ввгнг\", \"ввгнг 3x2.5 100м\", \"кабель ввгнг 3x2.5\"]. "
-        "Phrase examples for name \"Фарба акрилова біла матова 10л\": "
-        "[\"фарба акрилова біла\", \"біла матова 10л\", \"акрилова фарба 10л\"]. "
-        "If name is empty/unknown, return empty arrays []. Field sku is the article / vendor code / SKU only "
-        "when this value is explicitly shown by labels/columns like Артикул, Артикул постачальника, "
-        "Код товару, SKU, Article, Part number, Cat. no., etc.; if article/code is absent, ambiguous, or "
-        "looks inferred from another field (including barcode), return \"\". Field "
-        "barcode is a product barcode value from labels like Штрихкод, Barcode, EAN, GTIN, UPC "
-        "(digits only, keep leading zeros), otherwise \"\". Field priceVatType is \"с НДС\" when the "
-        "line price explicitly includes VAT, \"без НДС\" when the line price explicitly excludes VAT; "
-        "if VAT status is not explicitly stated for that line but priceColumnVatType is known, copy "
-        "priceColumnVatType into each line. Field vatRate is the explicit VAT "
-        "rate for that line (examples: \"20%\", \"7%\", \"0%\", \"без НДС\"); if no clear per-line rate is "
-        "shown, use \"\". Omit other fields only if absent. "
-        "In counterparty: add supplier_search_keyword and buyer_search_keyword as arrays of keywords "
-        "generated from supplier and buyer names respectively; preferably include just the company name "
-        "as a single keyword, without duplicates. If name is empty/unknown, return []. supplierInn is the tax id of the "
-        "supplier/seller/issuer (e.g. ЄДРПОУ, ДРФО, ИНН next to Постачальник/Продавець/Виконавець); "
-        "buyerInn is the buyer's tax id when shown (Покупець/Замовник). supplierKpp and buyerKpp are "
-        "Russian КПП when present; otherwise \"\". supplierOkpo and buyerOkpo: in Russian "
-        "documents use label ОКПО (8 digits for organizations, 10 for sole proprietors); in Ukrainian "
-        "documents the same role is ЄДРПОУ (typically 8 digits for legal entities) — put that value "
-        "in supplierOkpo/buyerOkpo when it is the party's registration/statistical code, even if also "
-        "in supplierInn. If absent, \"\". Do not put the buyer's code into supplierOkpo. "
-        "For contract.numberAndDetails: the sign № (and prefixes like N/Nr) is not part of the value; "
-        "remove it and keep only meaningful contract details/identifier text. "
-        "Field documentDate: date of the current primary document itself (invoice/act/waybill date), "
-        "not the contract date. If multiple dates are visible, choose the date tied to the main "
-        "document header/title, not contract references; output strictly in YYYY/mm/dd format, or \"\" "
-        "if absent/unclear. "
-        "Field documentTitle: the visible printed document title or form name at the top (e.g. "
-        "\"Счет на оплату\", \"Приходная накладная\", \"Акт выполненных работ\"); use \"\" if absent. "
-        "Field documentType: infer from documentTitle (and header wording) — exactly one enum: "
-        "Счет — invoice, bill, payment invoice, счет-фактура, proforma, рахунок (on payment), etc.; "
-        "ПриходнаяНакладная — incoming / goods receipt, приходная накладная, прибуткова накладна; "
-        "РасходнаяНакладная — outgoing, расходная накладная, видаткова накладна; "
-        "АктВыполненныхРабот — act of works/services, акт выполненных работ, акт наданих послуг, "
-        "акт прийому-передачі, acceptance certificates for works/services; "
-        "Неопределено — when the title does not clearly match any of the above.";
-
     boost::json::object part_text;
-    part_text["text"] = prompt;
+    part_text["text"] = std::string(PrimaryDocumentExtractionInstructionUtf8());
 
     boost::json::array parts;
     parts.push_back(part_binary);
@@ -1939,6 +1944,63 @@ void ForceCopyPriceColumnVatTypeToLines(boost::json::object& root) {
     }
 }
 
+std::string MakeAnthropicPrimaryDocumentUserPromptUtf8() {
+    return std::string(PrimaryDocumentExtractionInstructionUtf8())
+        + "\n\nYou MUST respond with a single JSON object only (no markdown code fences, no explanation "
+          "text) that strictly follows the JSON Schema below (respect types and required fields; use \"\" "
+          "for unknown strings and [] for empty arrays when appropriate):\n"
+        + boost::json::serialize(BuildInvoiceResponseSchema());
+}
+
+std::string NormalizePrimaryDocumentJsonFromAssistantText(const std::string& assistant_text_utf8,
+                                                            std::string& error_out) {
+    error_out.clear();
+    std::string inner = StripMarkdownJsonFence(assistant_text_utf8);
+    TrimAsciiInPlace(inner);
+    if (inner.empty()) {
+        error_out = "Empty model JSON body";
+        return {};
+    }
+
+    try {
+        boost::json::value parsed = boost::json::parse(inner);
+        if (parsed.is_object()) {
+            MaybeEnrichDocumentType(parsed.as_object());
+            MaybeNormalizeDocumentDateField(parsed.as_object());
+            MaybeNormalizeContractFields(parsed.as_object());
+            MaybeNormalizeLineItemsSku(parsed.as_object());
+            MaybeNormalizeLineItemsBarcode(parsed.as_object());
+            MaybeNormalizeLineItemsVat(parsed.as_object());
+            MaybeNormalizeLineItemsName(parsed.as_object());
+            MaybeNormalizeCounterpartyNames(parsed.as_object());
+            ForceCopyPriceColumnVatTypeToLines(parsed.as_object());
+            SanitizeAllTextFieldsExceptRawText(parsed.as_object());
+        }
+        return boost::json::serialize(parsed);
+    } catch (const std::exception& e) {
+        try {
+            const std::string repaired = RepairLikelyInvalidJsonEscapes(inner);
+            boost::json::value reparsed = boost::json::parse(repaired);
+            if (reparsed.is_object()) {
+                MaybeEnrichDocumentType(reparsed.as_object());
+                MaybeNormalizeDocumentDateField(reparsed.as_object());
+                MaybeNormalizeContractFields(reparsed.as_object());
+                MaybeNormalizeLineItemsSku(reparsed.as_object());
+                MaybeNormalizeLineItemsBarcode(reparsed.as_object());
+                MaybeNormalizeLineItemsVat(reparsed.as_object());
+                MaybeNormalizeLineItemsName(reparsed.as_object());
+                MaybeNormalizeCounterpartyNames(reparsed.as_object());
+                ForceCopyPriceColumnVatTypeToLines(reparsed.as_object());
+                SanitizeAllTextFieldsExceptRawText(reparsed.as_object());
+            }
+            return boost::json::serialize(reparsed);
+        } catch (...) {
+            error_out = std::string("Model JSON parse error: ") + e.what();
+            return {};
+        }
+    }
+}
+
 std::string GeminiExtractPrimaryDocumentJsonImpl(const std::string& api_key_utf8,
                                                  const std::string& model_id_utf8,
                                                  std::string_view mime_type,
@@ -1952,7 +2014,7 @@ std::string GeminiExtractPrimaryDocumentJsonImpl(const std::string& api_key_utf8
         raw_response_out->clear();
     }
     if (api_key_utf8.empty()) {
-        error_out = "API key is empty";
+        error_out = "Gemini API key is empty";
         return {};
     }
     if (bytes.empty()) {
@@ -2016,50 +2078,11 @@ std::string GeminiExtractPrimaryDocumentJsonImpl(const std::string& api_key_utf8
         return {};
     }
 
-    std::string inner = StripMarkdownJsonFence(*text_opt);
-    TrimAsciiInPlace(inner);
-    if (inner.empty()) {
-        error_out = "Gemini returned empty JSON body";
+    std::string normalized = NormalizePrimaryDocumentJsonFromAssistantText(*text_opt, error_out);
+    if (!error_out.empty()) {
         return {};
     }
-
-    try {
-        boost::json::value parsed = boost::json::parse(inner);
-        if (parsed.is_object()) {
-            MaybeEnrichDocumentType(parsed.as_object());
-            MaybeNormalizeDocumentDateField(parsed.as_object());
-            MaybeNormalizeContractFields(parsed.as_object());
-            MaybeNormalizeLineItemsSku(parsed.as_object());
-            MaybeNormalizeLineItemsBarcode(parsed.as_object());
-            MaybeNormalizeLineItemsVat(parsed.as_object());
-            MaybeNormalizeLineItemsName(parsed.as_object());
-            MaybeNormalizeCounterpartyNames(parsed.as_object());
-            ForceCopyPriceColumnVatTypeToLines(parsed.as_object());
-            SanitizeAllTextFieldsExceptRawText(parsed.as_object());
-        }
-        return boost::json::serialize(parsed);
-    } catch (const std::exception& e) {
-        try {
-            const std::string repaired = RepairLikelyInvalidJsonEscapes(inner);
-            boost::json::value reparsed = boost::json::parse(repaired);
-            if (reparsed.is_object()) {
-                MaybeEnrichDocumentType(reparsed.as_object());
-                MaybeNormalizeDocumentDateField(reparsed.as_object());
-                MaybeNormalizeContractFields(reparsed.as_object());
-                MaybeNormalizeLineItemsSku(reparsed.as_object());
-                MaybeNormalizeLineItemsBarcode(reparsed.as_object());
-                MaybeNormalizeLineItemsVat(reparsed.as_object());
-                MaybeNormalizeLineItemsName(reparsed.as_object());
-                MaybeNormalizeCounterpartyNames(reparsed.as_object());
-                ForceCopyPriceColumnVatTypeToLines(reparsed.as_object());
-                SanitizeAllTextFieldsExceptRawText(reparsed.as_object());
-            }
-            return boost::json::serialize(reparsed);
-        } catch (...) {
-            error_out = std::string("Gemini JSON parse error: ") + e.what();
-            return {};
-        }
-    }
+    return normalized;
 }
 
 std::string GeminiGeneratePlainTextImpl(const std::string& api_key_utf8,
@@ -2074,7 +2097,7 @@ std::string GeminiGeneratePlainTextImpl(const std::string& api_key_utf8,
         raw_response_out->clear();
     }
     if (api_key_utf8.empty()) {
-        error_out = "API key is empty";
+        error_out = "Gemini API key is empty";
         return {};
     }
     if (user_text_utf8.size() > kMaxPlainTextPromptBytes) {
@@ -2143,6 +2166,15 @@ std::string GeminiGeneratePlainTextImpl(const std::string& api_key_utf8,
 
 } // namespace
 
+std::string GeminiPrimaryDocumentAnthropicUserPromptUtf8() {
+    return MakeAnthropicPrimaryDocumentUserPromptUtf8();
+}
+
+std::string GeminiNormalizePrimaryDocumentJsonFromAssistantText(const std::string& assistant_text_utf8,
+                                                                std::string& error_out) {
+    return NormalizePrimaryDocumentJsonFromAssistantText(assistant_text_utf8, error_out);
+}
+
 std::string GeminiExtractPrimaryDocumentJson(const std::string& api_key_utf8,
                                              const std::string& model_id_utf8,
                                              const std::vector<char>& pdf_bytes,
@@ -2164,7 +2196,7 @@ std::string GeminiExtractPrimaryDocumentJsonFromImageBytes(const std::string& ap
                                                            std::string* raw_response_out) {
     error_out.clear();
     if (api_key_utf8.empty()) {
-        error_out = "API key is empty";
+        error_out = "Gemini API key is empty";
         return {};
     }
     if (image_bytes.empty()) {
@@ -2206,12 +2238,12 @@ std::string GeminiSupportedModelsCatalogJson() {
     };
     add("gemini-3.1-pro-preview", "Gemini 3.1 Pro",
         u8"Линейка выше 2.5; превью, доступность и квоты — в AI Studio.");
-    add("gemini-3.1-flash-lite-preview", "Gemini 3.1 Flash-Lite",
-        u8"Облегчённая 3.1; превью.");
+    add("gemini-3.1-flash-lite", "Gemini 3.1 Flash-Lite",
+        u8"Облегчённая 3.1; GA в Gemini API. Устаревший gemini-3.1-flash-lite-preview в аддине автоматически заменяется на этот id.");
     add("gemini-3-pro", "Gemini 3 Pro (alias)",
         u8"Алиас в аддине: автоматически мапится на gemini-3.1-pro-preview.");
     add("gemini-3-flash-lite", "Gemini 3 Flash-Lite (alias)",
-        u8"Алиас в аддине: автоматически мапится на gemini-3.1-flash-lite-preview.");
+        u8"Алиас в аддине: автоматически мапится на gemini-3.1-flash-lite.");
     add("gemini-3-flash-preview", "Gemini 3 Flash",
         u8"Основной Flash линейки 3 в API (имени gemini-3.0-flash нет). Не путать с несуществующим gemini-3.1-flash без суффикса.");
     add("gemini-2.5-pro", "Gemini 2.5 Pro", u8"Выше качество, ниже скорость; PDF и изображения.");
@@ -2224,13 +2256,13 @@ std::string GeminiSupportedModelsCatalogJson() {
     root["defaultModelId"] = std::string(kGeminiDefaultModelId);
     root["namingNote"] = std::string(
         u8"Отдельных моделей gemini-3.0-flash и gemini-3.1-flash (без суффикса) в Gemini API нет. "
-        u8"Flash для линейки 3 — gemini-3-flash-preview; облегчённый вариант 3.1 — gemini-3.1-flash-lite-preview. "
+        u8"Flash для линейки 3 — gemini-3-flash-preview; облегчённый вариант 3.1 — gemini-3.1-flash-lite (GA). "
         u8"Для картинок в документации также фигурирует gemini-3.1-flash-image-preview.");
     root["propertyHint"] =
         std::string(u8"В свойство МодельGemini (GeminiModel) подставляйте значение поля id из массива models.");
     root["aliasesHint"] = std::string(
         u8"Также поддерживаются пользовательские алиасы gemini-3-pro и gemini-3-flash-lite "
-        u8"(включая варианты с пробелами): они автоматически приводятся к актуальным 3.1 preview ID.");
+        u8"(включая варианты с пробелами): они автоматически приводятся к актуальным идентификаторам 3.1 (Flash-Lite — GA).");
     root["disclaimer"] = std::string(
         u8"Модели линейки Gemini 1.x и ниже 2.0 в список не включены (для generateContent не рекомендуются). "
         u8"Идентификаторы с суффиксом preview могут меняться. "

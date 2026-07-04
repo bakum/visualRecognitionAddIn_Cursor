@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.20)
 
 project(VisualRecognitionAddIn
-    VERSION 2.0.10
+    VERSION 2.0.12
     LANGUAGES CXX
     DESCRIPTION "1C native add-in (VisualRecognition)"
 )
@@ -17,6 +17,7 @@ add_library(VisualRecognitionAddIn SHARED
     src/Component.cpp
     src/exports.cpp
     src/VisualAddIn.cpp
+    src/AnthropicMessagesClient.cpp
     src/GeminiPdfClient.cpp
     src/BoostJsonSingle.cpp
 )

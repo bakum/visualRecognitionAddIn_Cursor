@@ -3,6 +3,7 @@
 
 #include <cstdint>
 #include <string>
+#include <string_view>
 #include <vector>
 
 /// Идентификатор модели по умолчанию (если из 1С передана пустая строка).
@@ -50,5 +51,12 @@ std::string GeminiGeneratePlainText(const std::string& api_key_utf8,
 
 /// Каталог рекомендуемых моделей (UTF-8 JSON): defaultModelId, models[{id,name,notes}], подсказки. Ключ API не нужен.
 std::string GeminiSupportedModelsCatalogJson();
+
+/// Текст пользовательского сообщения (инструкция + JSON Schema) для извлечения первички через Anthropic Messages.
+std::string GeminiPrimaryDocumentAnthropicUserPromptUtf8();
+
+/// Постобработка JSON первички из сырого текста ответа модели (Gemini или Anthropic).
+std::string GeminiNormalizePrimaryDocumentJsonFromAssistantText(const std::string& assistant_text_utf8,
+                                                                std::string& error_out);
 
 #endif
