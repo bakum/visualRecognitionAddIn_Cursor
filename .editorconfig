@@ -1,0 +1,11 @@
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+
+[*.{cpp,h,hpp,c,cc,cxx}]
+charset = utf-8
+
+[*.ps1]
+end_of_line = crlf
