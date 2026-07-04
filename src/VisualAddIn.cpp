@@ -1,4 +1,4 @@
-/*
+﻿/*
  *  Modern Native AddIn
  *  Copyright (C) 2018  Infactum
  *
